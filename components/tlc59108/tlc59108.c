@@ -16,6 +16,7 @@ static bool power_gpio_initialized = false;
 #define TLC_RESET_GPIO  GPIO_NUM_15
 static bool reset_gpio_initialized = false;
 
+uint8_t current_brightness = 255;  // default full brightness
 
 #define TLC_ADDR 0x40
 #define REG_MODE1   0x00
@@ -24,11 +25,38 @@ static bool reset_gpio_initialized = false;
 #define REG_LEDOUT0 0x0C
 #define REG_LEDOUT1 0x0D
 
-static const uint8_t amber_channels[] = {0, 1, 2, 3};
-static const uint8_t white_channels[] = {4, 5, 6, 7};
-static const uint8_t all_channels[]   = {0, 1, 2, 3, 4, 5, 6, 7};
+static const uint8_t amber_channels[] = {0, 1, 2};
+static const uint8_t white_channels[] = {3, 4, 5};
+static const uint8_t all_channels[]   = {0, 1, 2, 3, 4, 5};
+static i2c_master_dev_handle_t tlc_dev;
 
 static const char *TAG = "TLC9108";
+
+
+
+uint8_t tlc_get_amber_brightness(void)
+{
+    uint8_t sum = 0, v = 0;
+
+    for (int i = 0; i < 4; i++) {
+        tlc_read_reg(REG_PWM0 + amber_channels[i], &v);
+        sum += v;
+    }
+
+    return sum / 4;
+}
+
+uint8_t tlc_get_white_brightness(void)
+{
+    uint8_t sum = 0, v = 0;
+
+    for (int i = 0; i < 4; i++) {
+        tlc_read_reg(REG_PWM0 + white_channels[i], &v);
+        sum += v;
+    }
+
+    return sum / 4;
+}
 
 void tlc_reset_init(void)
 {
@@ -152,7 +180,6 @@ void tlc_boot_led_sequence(void)
 
 
 
-static i2c_master_dev_handle_t tlc_dev;
 
 static esp_err_t tlc_write_reg(uint8_t reg, uint8_t value)
 {
@@ -291,4 +318,115 @@ void tlc_set_group_brightness(uint8_t *channels, int count, uint8_t value)
     for(int i = 0; i < count; i++)
         tlc_set_channel_brightness(channels[i], value);
     ESP_LOGI(TAG, "Set group %d to %d", channels[0], value);
+}
+
+float ct_white_ratio = 0.5f;
+float ct_amber_ratio = 0.5f;
+
+void led_color_temperature_control(uint16_t mired)
+{
+    //current_mired = mired;
+
+    // Convert mired to Kelvin
+    float kelvin = 1000000.0f / (float)mired;
+
+    //if (kelvin < 2200.0f) kelvin = 2200.0f;
+    //if (kelvin > 5000.0f) kelvin = 5000.0f;
+
+    ct_white_ratio = (kelvin - 2200.0f) / (5000.0f - 2200.0f);
+    if (ct_white_ratio < 0) ct_white_ratio = 0;
+    if (ct_white_ratio > 1) ct_white_ratio = 1;
+
+    ct_amber_ratio = 1.0f - ct_white_ratio;
+
+    // Apply combined brightness + CT
+    led_apply_brightness_and_ct();
+}
+
+void led_apply_brightness_and_ct(void)
+{
+    uint8_t amber_pwm = (uint8_t)(current_brightness * ct_amber_ratio);
+    uint8_t white_pwm = (uint8_t)(current_brightness * ct_white_ratio);
+
+    tlc_set_group_brightness(amber_channels, 3, amber_pwm);
+    tlc_set_group_brightness(white_channels, 3, white_pwm);
+
+    ESP_LOGI("TLC9108", "Final output: amber=%d white=%d", amber_pwm, white_pwm);
+    ESP_LOGI("TLC9108", "Current brightness =%d", current_brightness);
+}
+
+
+void tlc_test_channels(void)
+{
+    for (int brightness = 0; brightness <= 255; brightness += 5) {
+        tlc_set_all_brightness(0);  // turn off everything
+        tlc_set_all_brightness((uint8_t)brightness);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    for (int brightness = 255; brightness >= 0; brightness -= 5) {
+        tlc_set_all_brightness(0);  // turn off everything
+        tlc_set_all_brightness((uint8_t)brightness);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    /*
+    for (int ch = 0; ch < 8; ch++) {
+        tlc_set_all_brightness(0);  // turn off everything
+        tlc_set_channel_brightness(ch, 255);
+
+        //ESP_LOGI("TLC_TEST", "Lighting channel %d", ch);
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+    */
+}
+
+void led_boot_trail_spin_animation(void)
+{
+    const uint8_t num_leds = 6;
+    const uint8_t head_brightness = 255;
+    const uint8_t trail_step = 60;     // brightness drop per LED behind
+    const int spin_delay_ms = 120;     // speed of rotation
+    const int rotations = 2;           // number of full spins
+
+    // -------------------------
+    // Spin with trailing fade
+    // -------------------------
+    for (int r = 0; r < rotations; r++) {
+        for (int head = 0; head < num_leds; head++) {
+
+            for (int i = 0; i < num_leds; i++) {
+                int dist = (head - i + num_leds) % num_leds;
+                int value = head_brightness - dist * trail_step;
+                if (value < 0) value = 0;
+
+                tlc_set_channel_brightness(all_channels[i], (uint8_t)value);
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(spin_delay_ms));
+        }
+    }
+
+    // -------------------------
+    // Fade up
+    // -------------------------
+    for (int b = 0; b <= 255; b += 5) {
+        for (int i = 0; i < num_leds; i++) {
+            tlc_set_channel_brightness(all_channels[i], b);
+        }
+        vTaskDelay(pdMS_TO_TICKS(15));
+    }
+
+    // -------------------------
+    // Fade down
+    // -------------------------
+    for (int b = 255; b >= 0; b -= 5) {
+        for (int i = 0; i < num_leds; i++) {
+            tlc_set_channel_brightness(all_channels[i], (uint8_t)b);
+        }
+        vTaskDelay(pdMS_TO_TICKS(15));
+    }
+
+    // Ensure all LEDs are off at the end
+    for (int i = 0; i < num_leds; i++) {
+        tlc_set_channel_brightness(all_channels[i], 0);
+    }
 }

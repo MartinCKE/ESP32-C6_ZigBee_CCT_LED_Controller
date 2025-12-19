@@ -55,10 +55,12 @@ void app_main(void)
     tlc_power_set(true);   
     tlc_reset_init();
 
+    //tlc_test_channels();
     //tlc_boot_led_sequence();
+    led_boot_trail_spin_animation();
 
     // Start breathing to indicate "not yet joined"
-    //tlc_breathe_init(0.25f);  // 0.25 Hz = slow breathing
+    tlc_breathe_init(0.2f);  // 0.25 Hz = slow breathing
 
     const float dt = 0.01f;  // 10 ms tick
 
@@ -76,7 +78,6 @@ void app_main(void)
     /* Start Zigbee stack task */
     ESP_LOGI("MAIN", "Starting ESP Zigbee Task");
     xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
-    
 
     while (1) {
 
@@ -86,9 +87,13 @@ void app_main(void)
 
         // Update breathing animation (non-blocking)
         //tlc_breathe_update(dt);
+        if (!zigbee_is_connected()) {
+            ESP_LOGI("MAIN", "Zigbee connected: %i", zigbee_is_connected());
+            tlc_breathe_update(dt);
+        }
 
-        //vTaskDelay(pdMS_TO_TICKS(dt * 1000));
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(dt * 1000));
+        //vTaskDelay(pdMS_TO_TICKS(1000));
 
         //tlc59108_set_pwm(0, 5); // Amber_1 ON
         //tlc59108_set_pwm(3, 5); // White_1 ON

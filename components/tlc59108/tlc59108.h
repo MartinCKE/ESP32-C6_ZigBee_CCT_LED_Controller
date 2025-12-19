@@ -3,7 +3,9 @@
 #include "esp_err.h"
 #include "driver/i2c_master.h"
 
+void led_color_temperature_control(uint16_t mired);
 
+extern uint8_t current_brightness;
 
 esp_err_t tlc59108_init(i2c_master_bus_handle_t bus);
 esp_err_t tlc59108_set_pwm(uint8_t channel, uint8_t value);
@@ -16,6 +18,7 @@ esp_err_t tlc_set_amber_brightness(uint8_t value);
 
 esp_err_t tlc_set_all_brightness_percentage(uint8_t percentage);
 
+void tlc_test_channels(void);
 
 void tlc_power_init(void);
 void tlc_power_set(bool on);
@@ -36,4 +39,10 @@ void tlc_set_channel_brightness(uint8_t channel, uint8_t value);
 void tlc_set_group_brightness(uint8_t *channels, int count, uint8_t value);
 
 uint8_t percentage_to_8bit(uint8_t percentage);
+uint8_t tlc_get_white_brightness(void);
+uint8_t tlc_get_amber_brightness(void);
+void led_color_temperature_control(uint16_t mired);
+void led_apply_brightness_and_ct(void);
+void led_boot_trail_spin_animation(void);
+
 
