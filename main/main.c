@@ -29,6 +29,38 @@ void scan_i2c(i2c_master_bus_handle_t bus)
     ESP_LOGI(TAG, "I2C scan finished.");
 }
 
+void led_task(void *arg)
+{
+    const TickType_t loop_delay = pdMS_TO_TICKS(30);
+
+    while (1) {
+        if (!zigbee_is_connected()) {
+            tlc_breathe_update(0.03f);
+        }
+        vTaskDelay(loop_delay);
+    }
+}
+
+
+void temperature_task(void *arg)
+{
+    const TickType_t temp_delay = pdMS_TO_TICKS(2000);
+
+    while (1) {
+        if (zigbee_is_connected()) {
+            int8_t t;
+            if (tc74_read_temperature(&t) == ESP_OK) {
+                ESP_LOGI("TEMP", "Temp = %d °C", t);
+            }
+            vTaskDelay(temp_delay);
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+    }
+}
+
+
+
 void app_main(void)
 {
 
@@ -45,6 +77,7 @@ void app_main(void)
     i2c_master_bus_handle_t bus;
     ESP_ERROR_CHECK(i2c_new_master_bus(&bus_cfg, &bus));
 
+    ESP_ERROR_CHECK(nvs_flash_init());
 
     // initialize devices
     tlc59108_init(bus);
@@ -72,47 +105,24 @@ void app_main(void)
     };
     ESP_LOGI("MAIN", "Starting NVS flash init");
     ESP_ERROR_CHECK(nvs_flash_init());
+
+    LoadFromNVS();
+
     ESP_LOGI("MAIN", "Starting ESP Zigbee Config");
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
 
     /* Start Zigbee stack task */
     ESP_LOGI("MAIN", "Starting ESP Zigbee Task");
     xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
+    
+
+
+    xTaskCreate(led_task,"led_task",2048,NULL,5,NULL);
+
+    xTaskCreate(temperature_task,"temperature_task",2048,NULL,4,NULL);
 
     while (1) {
-
-        int8_t t;
-        if (tc74_read_temperature(&t) == ESP_OK)
-            ESP_LOGI("MAIN", "Temp = %d °C", t);
-
-        // Update breathing animation (non-blocking)
-        //tlc_breathe_update(dt);
-        if (!zigbee_is_connected()) {
-            ESP_LOGI("MAIN", "Zigbee connected: %i", zigbee_is_connected());
-            tlc_breathe_update(dt);
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(dt * 1000));
-        //vTaskDelay(pdMS_TO_TICKS(1000));
-
-        //tlc59108_set_pwm(0, 5); // Amber_1 ON
-        //tlc59108_set_pwm(3, 5); // White_1 ON
-
-        // -------------------
-        // Toggle LEDs
-        // -------------------
-        //if (state) {
-            //tlc59108_set_pwm(2, 30); // Amber_1 ON
-            //tlc59108_set_pwm(3, 10); // Amber_1 ON
-            //tlc59108_set_pwm(4, 100); // Amber_1 ON
-            //tlc59108_set_pwm(4, 255); // White_1 ON
-            //tlc_dump_registers();
-        //} else {
-            //tlc59108_set_pwm(2, 0);   // Amber_1 OFF
-            //tlc59108_set_pwm(3, 0);   // Amber_1 OFF
-            //tlc59108_set_pwm(4, 0);   // White_1 OFF
-            //tlc_dump_registers();
-        //}        //
+        vTaskDelay(pdMS_TO_TICKS(100)); // yield so IDLE resets WDT
        
     }
 }

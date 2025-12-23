@@ -16,7 +16,7 @@ static bool power_gpio_initialized = false;
 #define TLC_RESET_GPIO  GPIO_NUM_15
 static bool reset_gpio_initialized = false;
 
-uint8_t current_brightness = 255;  // default full brightness
+uint16_t brightness = 255;  // default full brightness
 
 #define TLC_ADDR 0x40
 #define REG_MODE1   0x00
@@ -323,7 +323,7 @@ void tlc_set_group_brightness(uint8_t *channels, int count, uint8_t value)
 float ct_white_ratio = 0.5f;
 float ct_amber_ratio = 0.5f;
 
-void led_color_temperature_control(uint16_t mired)
+void led_color_temperature_control(uint16_t brightness, uint16_t mired)
 {
     //current_mired = mired;
 
@@ -340,19 +340,19 @@ void led_color_temperature_control(uint16_t mired)
     ct_amber_ratio = 1.0f - ct_white_ratio;
 
     // Apply combined brightness + CT
-    led_apply_brightness_and_ct();
+    led_apply_brightness_and_ct(brightness, mired);
 }
 
-void led_apply_brightness_and_ct(void)
+void led_apply_brightness_and_ct(uint16_t brightness, uint16_t mired)
 {
-    uint8_t amber_pwm = (uint8_t)(current_brightness * ct_amber_ratio);
-    uint8_t white_pwm = (uint8_t)(current_brightness * ct_white_ratio);
+    uint8_t amber_pwm = (uint16_t)(brightness * ct_amber_ratio);
+    uint8_t white_pwm = (uint16_t)(brightness * ct_white_ratio);
 
     tlc_set_group_brightness(amber_channels, 3, amber_pwm);
     tlc_set_group_brightness(white_channels, 3, white_pwm);
 
     ESP_LOGI("TLC9108", "Final output: amber=%d white=%d", amber_pwm, white_pwm);
-    ESP_LOGI("TLC9108", "Current brightness =%d", current_brightness);
+    ESP_LOGI("TLC9108", "Current brightness =%d", brightness);
 }
 
 

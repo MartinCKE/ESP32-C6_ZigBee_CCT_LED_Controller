@@ -13,9 +13,9 @@
 #define HA_ESP_SENSOR_ENDPOINT          11      /* esp temperature sensor device endpoint, used for temperature measurement */
 #define ESP_ZB_PRIMARY_CHANNEL_MASK     ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK    /* Zigbee primary channel mask use in the example */
 
-#define ESP_TEMP_SENSOR_UPDATE_INTERVAL (1)     /* Local sensor update interval (second) */
-#define ESP_TEMP_SENSOR_MIN_VALUE       (-10)   /* Local sensor min measured value (degree Celsius) */
-#define ESP_TEMP_SENSOR_MAX_VALUE       (80)    /* Local sensor max measured value (degree Celsius) */
+#define TEMP_SENSOR_UPDATE_INTERVAL (1)     /* Local sensor update interval (second) */
+#define TEMP_SENSOR_MIN_VALUE       (-10)   /* Local sensor min measured value (degree Celsius) */
+#define TEMP_SENSOR_MAX_VALUE       (80)    /* Local sensor max measured value (degree Celsius) */
 
 // Zigbee attribute IDs
 #define ATTRID_LEVEL_AMBER  0xF001
@@ -49,5 +49,9 @@ void esp_zb_task(void *pvParameters);
     }
 
 bool zigbee_is_connected(void);
+void LoadFromNVS();
+extern int32_t current_brightness;  
+extern int32_t mired;
+void SaveToNVS(); 
    
 
