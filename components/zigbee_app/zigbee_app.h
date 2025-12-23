@@ -53,5 +53,6 @@ void LoadFromNVS();
 extern int32_t current_brightness;  
 extern int32_t mired;
 void SaveToNVS(); 
+void zigbee_update_temperature(float temperature);
    
 

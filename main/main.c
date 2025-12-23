@@ -32,14 +32,29 @@ void scan_i2c(i2c_master_bus_handle_t bus)
 void led_task(void *arg)
 {
     const TickType_t loop_delay = pdMS_TO_TICKS(30);
-
+    bool connection_confirmed = false;
+    bool connected = false;
+    int32_t counter = 0;
     while (1) {
-        if (!zigbee_is_connected()) {
+        counter++;
+        //if (!zigbee_is_connected()) {
+        if (!connected) {
             tlc_breathe_update(0.03f);
+        }
+        else {
+            if (!connection_confirmed) {
+                connection_confirmed = true;
+                zigbee_connection_confirmed_sequence();
+            }
+        }
+        if (counter >= 33*10) { // approx every second
+            ESP_LOGI(TAG, "Fake connection done");
+            connected = true;
         }
         vTaskDelay(loop_delay);
     }
 }
+
 
 
 void temperature_task(void *arg)
@@ -48,9 +63,10 @@ void temperature_task(void *arg)
 
     while (1) {
         if (zigbee_is_connected()) {
-            int8_t t;
+            float t;
             if (tc74_read_temperature(&t) == ESP_OK) {
-                ESP_LOGI("TEMP", "Temp = %d °C", t);
+                ESP_LOGI(TAG, "Temp = %f °C", t);
+                zigbee_update_temperature((float)t); 
             }
             vTaskDelay(temp_delay);
         } else {
@@ -58,7 +74,6 @@ void temperature_task(void *arg)
         }
     }
 }
-
 
 
 void app_main(void)
@@ -115,7 +130,6 @@ void app_main(void)
     ESP_LOGI("MAIN", "Starting ESP Zigbee Task");
     xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
     
-
 
     xTaskCreate(led_task,"led_task",2048,NULL,5,NULL);
 

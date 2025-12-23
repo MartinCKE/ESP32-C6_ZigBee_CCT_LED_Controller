@@ -430,3 +430,20 @@ void led_boot_trail_spin_animation(void)
         tlc_set_channel_brightness(all_channels[i], 0);
     }
 }
+
+void zigbee_connection_confirmed_sequence(void)
+{
+    const TickType_t on_time  = pdMS_TO_TICKS(200);
+    const TickType_t off_time = pdMS_TO_TICKS(120);
+
+    tlc_set_breathing_enabled(false);
+    tlc_set_all_brightness(0);
+
+    for (int i = 0; i < 3; i++) {
+        tlc_set_all_brightness(128);
+        vTaskDelay(on_time);
+
+        tlc_set_all_brightness(0);
+        vTaskDelay(off_time);
+    }
+}
