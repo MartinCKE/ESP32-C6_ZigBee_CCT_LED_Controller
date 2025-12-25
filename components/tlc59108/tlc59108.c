@@ -32,8 +32,6 @@ static i2c_master_dev_handle_t tlc_dev;
 
 static const char *TAG = "TLC9108";
 
-
-
 uint8_t tlc_get_amber_brightness(void)
 {
     uint8_t sum = 0, v = 0;
@@ -64,7 +62,7 @@ void tlc_reset_init(void)
     gpio_config_t io_conf = {
         .pin_bit_mask = 1ULL << TLC_RESET_GPIO,
         .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,   // <-- enable internal pull-up
+        .pull_up_en = GPIO_PULLUP_ENABLE,   // <-- enable internal pull-up
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
@@ -202,9 +200,7 @@ esp_err_t tlc59108_init(i2c_master_bus_handle_t bus)
     // Ensure the device is powered before reset
     tlc_power_set(true);
     vTaskDelay(pdMS_TO_TICKS(20));
-    // Reset the device
-    //tlc_reset_pulse();
-    //vTaskDelay(pdMS_TO_TICKS(5));
+
 
     i2c_device_config_t devcfg = {
         .device_address = TLC_ADDR,
@@ -325,13 +321,12 @@ float ct_amber_ratio = 0.5f;
 
 void led_color_temperature_control(uint16_t brightness, uint16_t mired)
 {
-    //current_mired = mired;
-
     // Convert mired to Kelvin
     float kelvin = 1000000.0f / (float)mired;
 
-    //if (kelvin < 2200.0f) kelvin = 2200.0f;
-    //if (kelvin > 5000.0f) kelvin = 5000.0f;
+    // Clamp to valid range given our LED capabilities
+    if (kelvin < 2200.0f) kelvin = 2200.0f;
+    if (kelvin > 5000.0f) kelvin = 5000.0f;
 
     ct_white_ratio = (kelvin - 2200.0f) / (5000.0f - 2200.0f);
     if (ct_white_ratio < 0) ct_white_ratio = 0;
@@ -351,8 +346,8 @@ void led_apply_brightness_and_ct(uint16_t brightness, uint16_t mired)
     tlc_set_group_brightness(amber_channels, 3, amber_pwm);
     tlc_set_group_brightness(white_channels, 3, white_pwm);
 
-    ESP_LOGI("TLC9108", "Final output: amber=%d white=%d", amber_pwm, white_pwm);
-    ESP_LOGI("TLC9108", "Current brightness =%d", brightness);
+    ESP_LOGI(TAG, "Final output: amber=%d white=%d", amber_pwm, white_pwm);
+    ESP_LOGI(TAG, "Current brightness =%d", brightness);
 }
 
 
@@ -368,15 +363,6 @@ void tlc_test_channels(void)
         tlc_set_all_brightness((uint8_t)brightness);
         vTaskDelay(pdMS_TO_TICKS(100));
     }
-    /*
-    for (int ch = 0; ch < 8; ch++) {
-        tlc_set_all_brightness(0);  // turn off everything
-        tlc_set_channel_brightness(ch, 255);
-
-        //ESP_LOGI("TLC_TEST", "Lighting channel %d", ch);
-        vTaskDelay(pdMS_TO_TICKS(2000));
-    }
-    */
 }
 
 void led_boot_trail_spin_animation(void)
@@ -387,9 +373,7 @@ void led_boot_trail_spin_animation(void)
     const int spin_delay_ms = 120;     // speed of rotation
     const int rotations = 2;           // number of full spins
 
-    // -------------------------
     // Spin with trailing fade
-    // -------------------------
     for (int r = 0; r < rotations; r++) {
         for (int head = 0; head < num_leds; head++) {
 
@@ -415,9 +399,8 @@ void led_boot_trail_spin_animation(void)
         vTaskDelay(pdMS_TO_TICKS(15));
     }
 
-    // -------------------------
+
     // Fade down
-    // -------------------------
     for (int b = 255; b >= 0; b -= 5) {
         for (int i = 0; i < num_leds; i++) {
             tlc_set_channel_brightness(all_channels[i], (uint8_t)b);

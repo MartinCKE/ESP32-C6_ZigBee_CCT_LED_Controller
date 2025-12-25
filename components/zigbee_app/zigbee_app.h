@@ -3,14 +3,12 @@
 #include <stdbool.h>
 #include "esp_err.h"
 #include "esp_zigbee_core.h"
-#include "int_temp_sensor_driver.h"
 
 /* Zigbee configuration */
 #define INSTALLCODE_POLICY_ENABLE       false   /* enable the install code policy for security */
 #define ED_AGING_TIMEOUT                ESP_ZB_ED_AGING_TIMEOUT_64MIN
 #define ED_KEEP_ALIVE                   3000    /* 3000 millisecond */
 #define HA_COLOR_DIMMABLE_LIGHT_ENDPOINT  10                                    /* esp light switch device endpoint */
-#define HA_ESP_SENSOR_ENDPOINT          11      /* esp temperature sensor device endpoint, used for temperature measurement */
 #define ESP_ZB_PRIMARY_CHANNEL_MASK     ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK    /* Zigbee primary channel mask use in the example */
 
 #define TEMP_SENSOR_UPDATE_INTERVAL (1)     /* Local sensor update interval (second) */

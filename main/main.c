@@ -11,7 +11,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-//static const char *TAG = "I2C_SCAN";
 static const char *TAG = "MAIN";
 
 // I2C Scanner function
@@ -25,7 +24,6 @@ void scan_i2c(i2c_master_bus_handle_t bus)
             ESP_LOGI(TAG, "✔ Found device at address: 0x%02X", addr);
         }
     }
-
     ESP_LOGI(TAG, "I2C scan finished.");
 }
 
@@ -47,7 +45,7 @@ void led_task(void *arg)
                 zigbee_connection_confirmed_sequence();
             }
         }
-        if (counter >= 33*10) { // approx every second
+        if (counter >= 33*10 && !connected) { // approx every second
             ESP_LOGI(TAG, "Fake connection done");
             connected = true;
         }
@@ -57,7 +55,7 @@ void led_task(void *arg)
 
 
 
-void temperature_task(void *arg)
+void temperature_task_old_funke_perfeket_men(void *arg)
 {
     const TickType_t temp_delay = pdMS_TO_TICKS(2000);
 
@@ -65,7 +63,7 @@ void temperature_task(void *arg)
         if (zigbee_is_connected()) {
             float t;
             if (tc74_read_temperature(&t) == ESP_OK) {
-                ESP_LOGI(TAG, "Temp = %f °C", t);
+                ESP_LOGI(TAG, "Temp = %d °C", (int)t);
                 zigbee_update_temperature((float)t); 
             }
             vTaskDelay(temp_delay);
@@ -75,11 +73,29 @@ void temperature_task(void *arg)
     }
 }
 
+void temperature_task(void *arg)
+{
+    const TickType_t temp_delay = pdMS_TO_TICKS(2000);
+
+    while (1) {
+        float t;
+
+        if (tc74_read_temperature(&t) == ESP_OK) {
+            ESP_LOGI(TAG, "Temp = %d °C", (int)t);
+
+            if (zigbee_is_connected()) {
+                zigbee_update_temperature(t);
+            }
+        }
+
+        vTaskDelay(temp_delay);
+    }
+}
+
 
 void app_main(void)
 {
-
-    tlc_reset_init();
+    // Initiate i2c bus
     i2c_master_bus_config_t bus_cfg = {
         .clk_source = I2C_CLK_SRC_DEFAULT,
         .i2c_port = I2C_NUM_0,
@@ -92,28 +108,25 @@ void app_main(void)
     i2c_master_bus_handle_t bus;
     ESP_ERROR_CHECK(i2c_new_master_bus(&bus_cfg, &bus));
 
-    ESP_ERROR_CHECK(nvs_flash_init());
-
-    // initialize devices
-    tlc59108_init(bus);
-    tlc_dump_registers();
+    // Initialize temperature sensor
     tc74_init(bus);
 
-    // Turn LED driver ON
-    tlc_power_set(true);   
+    // Initiate LED driver
     tlc_reset_init();
-
-    //tlc_test_channels();
-    //tlc_boot_led_sequence();
-    led_boot_trail_spin_animation();
+    tlc59108_init(bus);
+    tlc_power_set(true);   
+    //tlc_dump_registers();
+    tlc_reset_init();
+    //led_boot_trail_spin_animation();
 
     // Start breathing to indicate "not yet joined"
-    tlc_breathe_init(0.2f);  // 0.25 Hz = slow breathing
+    //tlc_breathe_init(0.2f);  // 0.25 Hz = slow breathing
+
+
+    //scan_i2c(bus);
 
     const float dt = 0.01f;  // 10 ms tick
-
-    scan_i2c(bus);
-
+    
     esp_zb_platform_config_t config = {
         .radio_config = ESP_ZB_DEFAULT_RADIO_CONFIG(),
         .host_config = ESP_ZB_DEFAULT_HOST_CONFIG(),
@@ -121,7 +134,7 @@ void app_main(void)
     ESP_LOGI("MAIN", "Starting NVS flash init");
     ESP_ERROR_CHECK(nvs_flash_init());
 
-    LoadFromNVS();
+    LoadFromNVS(); // Loading last known brightness / color temperature
 
     ESP_LOGI("MAIN", "Starting ESP Zigbee Config");
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
@@ -130,13 +143,17 @@ void app_main(void)
     ESP_LOGI("MAIN", "Starting ESP Zigbee Task");
     xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
     
-
+    /* Start LED task */
     xTaskCreate(led_task,"led_task",2048,NULL,5,NULL);
 
+    /* Start Temp Sensor task */
     xTaskCreate(temperature_task,"temperature_task",2048,NULL,4,NULL);
 
     while (1) {
+        float t;
+        if (tc74_read_temperature(&t) == ESP_OK) {
+            ESP_LOGI(TAG, "while loop Temp = %d °C", (int)t);
+            }
         vTaskDelay(pdMS_TO_TICKS(100)); // yield so IDLE resets WDT
-       
     }
 }
