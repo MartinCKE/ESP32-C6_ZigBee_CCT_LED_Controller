@@ -77,6 +77,35 @@ void temperature_task_old_men_funke(void *arg) {
     }
 }
 
+void temperature_task_rh_test(void *arg) {
+    const TickType_t temp_delay = pdMS_TO_TICKS(2000);
+    float t_ms = -1.0f;
+    float rh = -1.0f;
+    while (1) {
+        //float t_ms   = -1.0f;
+        //float rh     = -1.0f;
+
+        esp_err_t ret_ms   = ms8607_read_temperature_humidity(&t_ms, &rh);
+
+        // Log all values in one line (with error info if something failed)
+        if (ret_ms == ESP_OK) {
+            ESP_LOGI(TAG, "MS8607: %.2f °C, %.1f %%RH", t_ms, rh);
+            if (zigbee_is_connected()) {
+                zigbee_update_temp_rh(t_ms, rh);
+            }
+
+        } else {
+            ESP_LOGI(TAG, "MS8607: %s (%.2f °C, %.1f %%RH)",
+                     esp_err_to_name(ret_ms),   t_ms, rh);
+
+            if (ret_ms != ESP_OK) {
+                ESP_LOGE(TAG, "MS8607 read failed: %s", esp_err_to_name(ret_ms));
+            }
+        }
+        vTaskDelay(temp_delay);
+    }
+}
+
 void temperature_task(void *arg) {
     const TickType_t temp_delay = pdMS_TO_TICKS(2000);
 
@@ -177,7 +206,7 @@ void app_main(void)
     xTaskCreate(led_task,"led_task",2048,NULL,5,NULL);
 
     /* Start Temp Sensor task */
-    xTaskCreate(temperature_task,"temperature_task",4096,NULL,4,NULL);
+    xTaskCreate(temperature_task_rh_test,"temperature_task",4096,NULL,4,NULL);
 
     vTaskDelay(pdMS_TO_TICKS(400)); // Wait for tasks to settle
 
