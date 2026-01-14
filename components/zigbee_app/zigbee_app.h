@@ -52,5 +52,7 @@ extern int32_t current_brightness;
 extern int32_t mired;
 void SaveToNVS(); 
 void zigbee_update_temperature(float temperature);
+
+static esp_err_t zb_cmd_received_handler(const esp_zb_zcl_cmd_info_t *info);
    
 

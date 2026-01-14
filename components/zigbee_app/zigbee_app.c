@@ -221,7 +221,6 @@ void zigbee_update_temperature(float temperature)
 }
 
 
-
 static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const void *message)
 {
     esp_err_t ret = ESP_OK;
@@ -257,7 +256,21 @@ void esp_zb_task(void *pvParameters)
         .zcl_version = ESP_ZB_ZCL_BASIC_ZCL_VERSION_DEFAULT_VALUE,
         .power_source = 0x03,
     };
+    
+
+    uint32_t ApplicationVersion = 0x0001;
+    uint32_t StackVersion = 0x0002;
+    uint32_t HWVersion = 0x0002;
+    uint8_t ManufacturerName[] = {7, 'C', 'K', '-', 'H', 'o', 'm', 'e'}; // warning: this is in format {length, 'string'} :
+    uint8_t ModelIdentifier[] = {14, 'C', 'C', 'T', '-', 'S', 'm', 'a', 'r', 't', 'L', 'a', 'm', 'p'};
+    uint8_t DateCode[] = {8, '2', '0', '2', '5', '1', '2', '2', '6'};
     esp_zb_attribute_list_t *esp_zb_basic_cluster = esp_zb_basic_cluster_create(&basic_cluster_cfg);
+    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_APPLICATION_VERSION_ID, &ApplicationVersion);
+    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_STACK_VERSION_ID, &StackVersion);
+    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_HW_VERSION_ID, &HWVersion);
+    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, ManufacturerName);
+    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, ModelIdentifier);
+    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_DATE_CODE_ID, DateCode);
 
     // Set up identify cluster configuration
     esp_zb_identify_cluster_cfg_t identify_cluster_cfg = {

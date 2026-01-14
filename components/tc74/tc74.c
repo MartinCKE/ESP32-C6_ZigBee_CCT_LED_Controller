@@ -3,7 +3,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#define TC74_ADDR 0x4B
+#define TC74_ADDR 0x4C
 #define REG_TEMP  0x00
 #define REG_CONF  0x01
 
@@ -39,7 +39,7 @@ esp_err_t tc74_init(i2c_master_bus_handle_t bus)
     return ESP_OK;
 }
 
-esp_err_t tc74_read_temperature(int8_t *out_temp)
+esp_err_t tc74_read_temperature_old(float *out_temp)
 {
     uint8_t reg = REG_TEMP;
     uint8_t raw = 0;
@@ -51,3 +51,16 @@ esp_err_t tc74_read_temperature(int8_t *out_temp)
     *out_temp = (int8_t)raw;
     return ESP_OK;
 }
+
+esp_err_t tc74_read_temperature(float *out_temp_c)
+{
+    uint8_t reg = REG_TEMP;
+    uint8_t raw = 0;
+
+    esp_err_t err = i2c_master_transmit_receive(tc74_dev, &reg, 1, &raw, 1, -1);
+    if (err != ESP_OK) return err;
+
+    *out_temp_c = (float)((int8_t)raw);  // TC74 is signed 8-bit °C
+    return ESP_OK;
+}
+

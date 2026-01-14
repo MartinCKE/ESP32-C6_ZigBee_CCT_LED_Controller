@@ -18,7 +18,7 @@ static bool reset_gpio_initialized = false;
 
 uint16_t brightness = 255;  // default full brightness
 
-#define TLC_ADDR 0x40
+#define TLC_ADDR 0x41
 #define REG_MODE1   0x00
 #define REG_MODE2   0x01
 #define REG_PWM0    0x02
