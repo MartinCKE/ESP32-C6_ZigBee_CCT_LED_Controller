@@ -45,4 +45,13 @@ uint8_t tlc_get_amber_brightness(void);
 void led_boot_trail_spin_animation(void);
 void zigbee_connection_confirmed_sequence(void);
 
+void light_toggle_handler(void);
+
+void tlc_set_logical_brightness_smooth(uint8_t target, uint16_t mired_now);
+void tlc_set_ct_mired(uint16_t new_mired);
+void tlc_set_ct_mired_smooth(uint16_t target_mired, uint32_t transition_ms);
+
+void light_remember_brightness(uint8_t bri);
+void light_set_on(bool on, bool report_zigbee);
+bool light_is_on(void);
 

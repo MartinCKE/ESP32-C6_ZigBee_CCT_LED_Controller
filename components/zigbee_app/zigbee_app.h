@@ -53,6 +53,12 @@ extern int32_t mired;
 void SaveToNVS(); 
 void zigbee_update_temperature(float temperature);
 void zigbee_update_temp_rh(float temperature, float humidity);
+void zigbee_event_task(void *arg);
+void zigbee_set_onoff_and_report(bool on);
+void zigbee_set_level_and_report(uint8_t level);
+void zigbee_set_ct_and_report(uint16_t mired_value);
+void light_set_on(bool on, bool report_zigbee);
+bool light_is_on(void);
 
 static esp_err_t zb_cmd_received_handler(const esp_zb_zcl_cmd_info_t *info);
    

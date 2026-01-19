@@ -70,14 +70,6 @@ static esp_err_t pt_read_prom_first(void)
 
         prom[i] = (rx[0] << 8) | rx[1];
     }
-    /*
-    uint16_t prom_copy[8];
-    memcpy(prom_copy, prom, sizeof(prom));
-    if (crc4(prom_copy) != (prom[7] & 0xF)) {
-        ESP_LOGE(TAG, "PROM CRC mismatch");
-        return ESP_FAIL;
-    }
-    */
 
     return ESP_OK;
 }

@@ -8,6 +8,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
+#include "events.h"
+#include "status_led.h"
 
 static const char *TAG = "ZIGBEE_APP";
 
@@ -87,7 +89,7 @@ void LoadFromNVS(){
     current_brightness = saved_brightness;
     ESP_LOGI(TAG, "Loaded %i brightness and %i mired from NVS", (int)current_brightness, (int)mired);
     
-
+    //return saved_color, saved_brightness;
 }
 
 static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t *message)
@@ -106,6 +108,7 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID && message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_BOOL) {
                 light_state = message->attribute.data.value ? *(bool *)message->attribute.data.value : light_state;
                 ESP_LOGI(TAG, "Light sets to %s", light_state ? "On" : "Off");
+                light_set_on(light_state, false);
                 //light_driver_set_power(light_state);
             } else {
                 ESP_LOGW(TAG, "On/Off cluster data: attribute(0x%x), type(0x%x)", message->attribute.id, message->attribute.data.type);
@@ -116,10 +119,11 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMPERATURE_ID && message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_U16)
                 {
                     uint16_t new_mired = *(uint16_t *)message->attribute.data.value;
-                    led_color_temperature_control(current_brightness, new_mired);
+                    //led_color_temperature_control(current_brightness, new_mired);
                     ESP_LOGI(TAG, "Color sets to %i", (int)new_mired);
                     if (new_mired != mired) {
                         mired = new_mired;
+                        led_color_temperature_control((uint16_t)current_brightness, (uint16_t)mired);
                         SaveToNVS(mired, current_brightness);
                     }
                     
@@ -128,9 +132,16 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
         case ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL:
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID && message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_U8) {
                 light_level = message->attribute.data.value ? *(uint8_t *)message->attribute.data.value : light_level;
-                current_brightness = light_level;
-                led_apply_brightness_and_ct(current_brightness, mired);
                 ESP_LOGI(TAG, "Light level changes to %d", light_level);
+                //current_brightness = light_level;
+                //led_apply_brightness_and_ct(current_brightness, mired);
+                if (light_level > 0) {
+                    current_brightness = light_level;
+                    light_remember_brightness(light_level);
+                }
+                //current_brightness = light_level;
+                tlc_set_logical_brightness_smooth((uint8_t)current_brightness, (uint16_t)mired);
+                
                 SaveToNVS(mired, current_brightness);
             } else {
                 ESP_LOGW(TAG, "Level Control cluster data: attribute(0x%x), type(0x%x)", message->attribute.id, message->attribute.data.type);
@@ -612,20 +623,29 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
 
     case ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP:
         ESP_LOGI(TAG, "Initialize Zigbee stack");
+        status_led_set_state(STATUS_LED_STATE_JOINING_NETWORK);
         esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_INITIALIZATION);
         break;
     case ESP_ZB_BDB_SIGNAL_DEVICE_FIRST_START:
     case ESP_ZB_BDB_SIGNAL_DEVICE_REBOOT:
+        
         if (err_status == ESP_OK) {
             ESP_LOGI(TAG, "Device started up in%s factory-reset mode", esp_zb_bdb_is_factory_new() ? "" : " non");
             if (esp_zb_bdb_is_factory_new()) {
                 ESP_LOGI(TAG, "Start network steering");
+                status_led_set_state(STATUS_LED_STATE_JOINING_NETWORK);
                 esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
             } else {
                 ESP_LOGI(TAG, "Device rebooted");
                 ESP_LOGI(TAG, "Applying saved LED state after reboot");
                 ESP_LOGI(TAG, "Vals: %i brightness and %i mired", (int)current_brightness, (int)mired);
-                led_color_temperature_control(current_brightness, mired);
+
+                //led_color_temperature_control(current_brightness, mired);
+                tlc_set_ct_mired_smooth((uint16_t)mired, 400);
+                tlc_set_logical_brightness_smooth((uint8_t)current_brightness, (uint16_t)mired);
+                status_led_set_state(STATUS_LED_STATE_NORMAL_OPERATION);
+                light_set_on(true, true);
+                
             }
         } else {
             ESP_LOGW(TAG, "%s failed with status: %s, retrying", esp_zb_zdo_signal_to_string(sig_type),
@@ -635,7 +655,9 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
         }
         break;
     case ESP_ZB_BDB_SIGNAL_STEERING:
+        //status_led_set_state(STATUS_LED_STATE_JOINING_NETWORK);
         if (err_status == ESP_OK) {
+            status_led_set_state(STATUS_LED_STATE_JOINED_SUCCESSFULLY);
             esp_zb_ieee_addr_t extended_pan_id;
             esp_zb_get_extended_pan_id(extended_pan_id);
             ESP_LOGI(TAG, "Joined network successfully (Extended PAN ID: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x, PAN ID: 0x%04hx, Channel:%d, Short Address: 0x%04hx)",
@@ -644,12 +666,19 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
                      esp_zb_get_pan_id(), esp_zb_get_current_channel(), esp_zb_get_short_address());
             ESP_LOGI(TAG, "Applying saved LED state after join");
             ESP_LOGI(TAG, "Vals: %i brightness and %i mired", (int)current_brightness, (int)mired);
-            led_color_temperature_control(current_brightness, mired);
+            //led_color_temperature_control(current_brightness, mired);
+            tlc_set_ct_mired_smooth((uint16_t)mired, 400);
+            tlc_set_logical_brightness_smooth((uint8_t)current_brightness, (uint16_t)mired);
+            status_led_set_state(STATUS_LED_STATE_NORMAL_OPERATION);
+            light_set_on(true, true);
+            
             
             
         } else {
             ESP_LOGI(TAG, "Network steering was not successful (status: %s)", esp_err_to_name(err_status));
             esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb, ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);
+            
+            
         }
         break;
     default:
@@ -663,5 +692,134 @@ bool zigbee_is_connected(void)
 {
     return esp_zb_bdb_dev_joined();
 }
+
+void zigbee_event_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "zigbee_event_task started");
+    while (1) {
+        app_event_t ev;
+        if (events_wait(&ev, portMAX_DELAY)) {
+            if (ev == APP_EVENT_ZIGBEE_FACTORY_RESET) {
+                ESP_LOGI(TAG, "Performing Zigbee factory reset");
+                esp_zb_bdb_reset_via_local_action();
+            }
+        }
+    }
+}
+
+void zigbee_set_onoff_and_report(bool on)
+{
+    if (!esp_zb_bdb_dev_joined()) {
+        ESP_LOGW(TAG, "Not joined yet, skipping on/off report");
+        return;
+    }
+
+    esp_zb_lock_acquire(portMAX_DELAY);
+
+    // Update local ZCL attribute
+    esp_zb_zcl_attr_t *attr = esp_zb_zcl_get_attribute(
+        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT,
+        ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID
+    );
+
+    if (attr && attr->data_p) {
+        uint8_t v = on ? 1 : 0; // bool is usually fine too, but u8 is safe
+        memcpy(attr->data_p, &v, sizeof(v));
+    } else {
+        ESP_LOGW(TAG, "On/Off attribute not found");
+        esp_zb_lock_release();
+        return;
+    }
+
+    // Report to coordinator
+    esp_zb_zcl_report_attr_cmd_t cmd = {0};
+    cmd.zcl_basic_cmd.dst_addr_u.addr_short = 0x0000; // coordinator
+    cmd.zcl_basic_cmd.src_endpoint = HA_COLOR_DIMMABLE_LIGHT_ENDPOINT;
+    cmd.zcl_basic_cmd.dst_endpoint = 1;               // coordinator endpoint
+    cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+    cmd.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
+    cmd.clusterID = ESP_ZB_ZCL_CLUSTER_ID_ON_OFF;
+    cmd.attributeID = ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID;
+
+    esp_zb_zcl_report_attr_cmd_req(&cmd);
+
+    esp_zb_lock_release();
+}
+
+void zigbee_set_level_and_report(uint8_t level)
+{
+    if (!esp_zb_bdb_dev_joined()) return;
+
+    esp_zb_lock_acquire(portMAX_DELAY);
+
+    esp_zb_zcl_attr_t *attr = esp_zb_zcl_get_attribute(
+        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT,
+        ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID
+    );
+
+    if (attr && attr->data_p) {
+        memcpy(attr->data_p, &level, sizeof(level));
+    } else {
+        ESP_LOGW(TAG, "Level attribute not found");
+        esp_zb_lock_release();
+        return;
+    }
+
+    esp_zb_zcl_report_attr_cmd_t cmd = {0};
+    cmd.zcl_basic_cmd.dst_addr_u.addr_short = 0x0000;
+    cmd.zcl_basic_cmd.src_endpoint = HA_COLOR_DIMMABLE_LIGHT_ENDPOINT;
+    cmd.zcl_basic_cmd.dst_endpoint = 1;
+    cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+    cmd.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
+    cmd.clusterID = ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL;
+    cmd.attributeID = ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID;
+
+    esp_zb_zcl_report_attr_cmd_req(&cmd);
+
+    esp_zb_lock_release();
+}
+
+void zigbee_set_ct_and_report(uint16_t mired_value)
+{
+    if (!esp_zb_bdb_dev_joined()) return;
+
+    esp_zb_lock_acquire(portMAX_DELAY);
+
+    esp_zb_zcl_attr_t *attr = esp_zb_zcl_get_attribute(
+        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT,
+        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMPERATURE_ID
+    );
+
+    if (attr && attr->data_p) {
+        memcpy(attr->data_p, &mired_value, sizeof(mired_value));
+    } else {
+        ESP_LOGW(TAG, "CT attribute not found");
+        esp_zb_lock_release();
+        return;
+    }
+
+    esp_zb_zcl_report_attr_cmd_t cmd = {0};
+    cmd.zcl_basic_cmd.dst_addr_u.addr_short = 0x0000;
+    cmd.zcl_basic_cmd.src_endpoint = HA_COLOR_DIMMABLE_LIGHT_ENDPOINT;
+    cmd.zcl_basic_cmd.dst_endpoint = 1;
+    cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+    cmd.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
+    cmd.clusterID = ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL;
+    cmd.attributeID = ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMPERATURE_ID;
+
+    esp_zb_zcl_report_attr_cmd_req(&cmd);
+
+    esp_zb_lock_release();
+}
+
+
+
 
 
