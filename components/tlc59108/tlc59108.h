@@ -43,7 +43,7 @@ uint8_t tlc_get_white_brightness(void);
 uint8_t tlc_get_amber_brightness(void);
 
 void led_boot_trail_spin_animation(void);
-void zigbee_connection_confirmed_sequence(void);
+void zigbee_connection_confirmed_sequence(uint16_t brightness);
 
 void light_toggle_handler(void);
 

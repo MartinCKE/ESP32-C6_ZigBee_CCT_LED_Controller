@@ -51,7 +51,6 @@ void led_task(void *arg)
         else {
             if (!connection_confirmed) {
                 connection_confirmed = true;
-                zigbee_connection_confirmed_sequence();
             }
         }
         vTaskDelay(loop_delay);

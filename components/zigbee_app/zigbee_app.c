@@ -123,7 +123,7 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                     ESP_LOGI(TAG, "Color sets to %i", (int)new_mired);
                     if (new_mired != mired) {
                         mired = new_mired;
-                        led_color_temperature_control((uint16_t)current_brightness, (uint16_t)mired);
+                        tlc_set_ct_mired_smooth(mired, 400);
                         SaveToNVS(mired, current_brightness);
                     }
                     
@@ -641,10 +641,12 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
                 ESP_LOGI(TAG, "Vals: %i brightness and %i mired", (int)current_brightness, (int)mired);
 
                 //led_color_temperature_control(current_brightness, mired);
+                zigbee_connection_confirmed_sequence(current_brightness);
                 tlc_set_ct_mired_smooth((uint16_t)mired, 400);
                 tlc_set_logical_brightness_smooth((uint8_t)current_brightness, (uint16_t)mired);
                 status_led_set_state(STATUS_LED_STATE_NORMAL_OPERATION);
                 light_set_on(true, true);
+                
                 
             }
         } else {
@@ -667,13 +669,13 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             ESP_LOGI(TAG, "Applying saved LED state after join");
             ESP_LOGI(TAG, "Vals: %i brightness and %i mired", (int)current_brightness, (int)mired);
             //led_color_temperature_control(current_brightness, mired);
+            zigbee_connection_confirmed_sequence(current_brightness);
             tlc_set_ct_mired_smooth((uint16_t)mired, 400);
             tlc_set_logical_brightness_smooth((uint8_t)current_brightness, (uint16_t)mired);
             status_led_set_state(STATUS_LED_STATE_NORMAL_OPERATION);
             light_set_on(true, true);
             
-            
-            
+                
         } else {
             ESP_LOGI(TAG, "Network steering was not successful (status: %s)", esp_err_to_name(err_status));
             esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb, ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);

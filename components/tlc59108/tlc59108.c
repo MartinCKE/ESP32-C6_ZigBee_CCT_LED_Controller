@@ -270,7 +270,7 @@ uint8_t tlc_get_white_brightness(void)
 
 // ---------- CT + apply ----------
 
-void led_color_temperature_control(uint16_t brightness_in, uint16_t mired_in)
+void led_color_temperature_control_old(uint16_t brightness_in, uint16_t mired_in)
 {
     // Protect against divide-by-zero / nonsense input
     if (mired_in < 1) mired_in = 1;
@@ -290,25 +290,52 @@ void led_color_temperature_control(uint16_t brightness_in, uint16_t mired_in)
     ESP_LOGI(TAG, "led_color_temperature_control: bri=%u mired=%u", (unsigned)brightness_in, (unsigned)mired_in);
 }
 
-void led_apply_brightness_and_ct(uint16_t brightness_in, uint16_t mired_in)
+static void ct_compute_ratios(uint16_t mired, float *white_ratio, float *amber_ratio)
 {
-    (void)mired_in;
+    // Clamp mired to valid range
+    if (mired < 200) mired = 200;
+    if (mired > 455) mired = 455;
 
-    uint8_t amber_pwm = (uint16_t)(brightness_in * ct_amber_ratio);
-    uint8_t white_pwm = (uint16_t)(brightness_in * ct_white_ratio);
+    float kelvin = 1000000.0f / (float)mired;
 
-    tlc_set_group_brightness((uint8_t *)amber_channels, 3, amber_pwm);
-    tlc_set_group_brightness((uint8_t *)white_channels, 3, white_pwm);
+    if (kelvin < 2200.0f) kelvin = 2200.0f;
+    if (kelvin > 5000.0f) kelvin = 5000.0f;
+
+    float w = (kelvin - 2200.0f) / (5000.0f - 2200.0f);
+    if (w < 0.0f) w = 0.0f;
+    if (w > 1.0f) w = 1.0f;
+
+    *white_ratio = w;
+    *amber_ratio = 1.0f - w;
+}
+
+void led_apply_brightness_and_ct(uint16_t brightness, uint16_t mired)
+{
+    float white_ratio, amber_ratio;
+    ct_compute_ratios(mired, &white_ratio, &amber_ratio);
+
+    uint8_t amber_pwm = (uint16_t)(brightness * amber_ratio);
+    uint8_t white_pwm = (uint16_t)(brightness * white_ratio);
+
+    tlc_set_group_brightness((uint8_t*)amber_channels, 3, amber_pwm);
+    tlc_set_group_brightness((uint8_t*)white_channels, 3, white_pwm);
 
     s_out_amber = amber_pwm;
     s_out_white = white_pwm;
 
-    // Avoid spamming logs during fade (2ms steps)
-    ESP_LOGD(TAG, "Apply: bri=%u amber=%u white=%u", (unsigned)brightness_in, amber_pwm, white_pwm);
+    ESP_LOGI(TAG, "Apply: bri=%u mired=%u -> amber=%u white=%u",
+             (unsigned)brightness, (unsigned)mired,
+             (unsigned)amber_pwm, (unsigned)white_pwm);
 }
 
-// ---------- fade engine ----------
+// Optional: keep this wrapper for your old call sites:
+void led_color_temperature_control(uint16_t brightness, uint16_t mired)
+{
+    led_apply_brightness_and_ct(brightness, mired);
+}
 
+
+// ---------- fade engine ----------
 static void fade_task(void *arg)
 {
     (void)arg;
@@ -350,7 +377,7 @@ static void fade_task(void *arg)
         // ---- Apply output (only once) ----
         if (did_work) {
             // This must apply using the CURRENT CT value (s_ct.cur)
-            led_color_temperature_control((uint16_t)s_fade.cur, (uint16_t)s_ct.cur);
+            led_apply_brightness_and_ct(s_fade.cur, s_fade.mired);
             s_fade.mired = s_ct.cur;
             vTaskDelay(step_delay);
         } else {
@@ -385,24 +412,17 @@ void tlc_set_ct_mired_smooth(uint16_t target_mired, uint32_t transition_ms)
     if (target_mired > 455) target_mired = 455;
     if (transition_ms < 1) transition_ms = 1;
 
-    // Always start from the currently active CT, NOT only when cur==0
-    // The "currently active" CT for the fade engine is s_ct.cur.
-    // If you don't track that properly yet, set it from global mired
-    // only when not running.
+    // If no CT fade active, start from current rendered CT
     if (!s_ct.running) {
-        s_ct.cur = (uint16_t)s_fade.mired;   // <- start from what's being rendered
-        if (s_ct.cur == 0) s_ct.cur = (uint16_t)mired; // fallback
+        if (s_ct.cur < 200 || s_ct.cur > 455) {
+            s_ct.cur = (uint16_t)mired;   // fallback once, if needed
+        }
     }
 
     s_ct.target = target_mired;
     s_ct.transition_ms = transition_ms;
     s_ct.running = true;
-
-    // Ensure fade engine uses CT state (important if your fade task reads s_fade.mired)
-    s_fade.mired = s_ct.cur;
 }
-
-
 
 void tlc_set_ct_mired(uint16_t new_mired)
 {
@@ -413,13 +433,11 @@ void tlc_set_ct_mired(uint16_t new_mired)
     s_ct.target = new_mired;
     s_ct.running = false;
 
-    s_fade.mired = new_mired;
-
-    led_color_temperature_control((uint16_t)s_fade.cur, new_mired);
+    // Apply instantly at current brightness
+    led_apply_brightness_and_ct(s_fade.cur, s_ct.cur);
 }
 
 // ---------- init ----------
-
 esp_err_t tlc59108_init(i2c_master_bus_handle_t bus)
 {
     tlc_power_set(true);
@@ -588,24 +606,24 @@ void led_boot_trail_spin_animation(void)
     for (int i = 0; i < num_leds; i++) tlc_set_channel_brightness(all_channels[i], 0);
 }
 
-void zigbee_connection_confirmed_sequence(void)
+void zigbee_connection_confirmed_sequence(uint16_t brightness)
 {
-    const TickType_t on_time  = pdMS_TO_TICKS(200);
-    const TickType_t off_time = pdMS_TO_TICKS(120);
+    const TickType_t on_time  = pdMS_TO_TICKS(120);
+    const TickType_t off_time = pdMS_TO_TICKS(200);
+    ESP_LOGI(TAG, "Zigbee connection confirmed LED sequence");
 
     tlc_set_breathing_enabled(false);
-    tlc_set_all_brightness(0);
 
     for (int i = 0; i < 3; i++) {
-        tlc_set_all_brightness(128);
-        vTaskDelay(on_time);
         tlc_set_all_brightness(0);
+        vTaskDelay(on_time);
+        tlc_set_all_brightness(80);
         vTaskDelay(off_time);
     }
-
+    tlc_set_all_brightness(brightness);
     // After blink, return to “normal” output (smooth engine will take over as you call it)
     light_on = true;
-    zigbee_set_onoff_and_report(light_on);
+    //zigbee_set_onoff_and_report(light_on);
 }
 
 
