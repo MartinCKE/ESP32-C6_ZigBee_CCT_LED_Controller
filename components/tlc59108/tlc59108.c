@@ -42,6 +42,10 @@ uint16_t brightness = 128;
 #define REG_LEDOUT0 0x0C
 #define REG_LEDOUT1 0x0D
 
+#define AMBER_CH_COUNT 3
+#define WHITE_CH_COUNT 3
+#define ALL_CH_COUNT   6
+
 static const uint8_t amber_channels[] = {0, 1, 2};
 static const uint8_t white_channels[] = {3, 4, 5};
 static const uint8_t all_channels[]   = {0, 1, 2, 3, 4, 5};
@@ -251,21 +255,21 @@ static uint8_t get_current_logical_brightness_from_outputs(void)
 uint8_t tlc_get_amber_brightness(void)
 {
     uint8_t sum = 0, v = 0;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < AMBER_CH_COUNT; i++) {
         tlc_read_reg(REG_PWM0 + amber_channels[i], &v);
         sum += v;
     }
-    return sum / 3;
+    return sum / AMBER_CH_COUNT;
 }
 
 uint8_t tlc_get_white_brightness(void)
 {
     uint8_t sum = 0, v = 0;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < WHITE_CH_COUNT; i++) {
         tlc_read_reg(REG_PWM0 + white_channels[i], &v);
         sum += v;
     }
-    return sum / 3;
+    return sum / WHITE_CH_COUNT;
 }
 
 // ---------- CT + apply ----------
@@ -311,19 +315,26 @@ static void ct_compute_ratios(uint16_t mired, float *white_ratio, float *amber_r
 
 void led_apply_brightness_and_ct(uint16_t brightness, uint16_t mired)
 {
+    if (brightness > 255) brightness = 255;
     float white_ratio, amber_ratio;
     ct_compute_ratios(mired, &white_ratio, &amber_ratio);
 
-    uint8_t amber_pwm = (uint16_t)(brightness * amber_ratio);
-    uint8_t white_pwm = (uint16_t)(brightness * white_ratio);
+    uint16_t a = (uint16_t)(brightness * amber_ratio);
+    uint16_t w = (uint16_t)(brightness * white_ratio);
 
-    tlc_set_group_brightness((uint8_t*)amber_channels, 3, amber_pwm);
-    tlc_set_group_brightness((uint8_t*)white_channels, 3, white_pwm);
+    if (a > 255) a = 255;
+    if (w > 255) w = 255;
+
+    uint8_t amber_pwm = (uint8_t)a;
+    uint8_t white_pwm = (uint8_t)w;
+
+    tlc_set_group_brightness((uint8_t*)amber_channels, AMBER_CH_COUNT, amber_pwm);
+    tlc_set_group_brightness((uint8_t*)white_channels, WHITE_CH_COUNT, white_pwm);
 
     s_out_amber = amber_pwm;
     s_out_white = white_pwm;
 
-    ESP_LOGI(TAG, "Apply: bri=%u mired=%u -> amber=%u white=%u",
+    ESP_LOGD(TAG, "Apply: bri=%u mired=%u -> amber=%u white=%u",
              (unsigned)brightness, (unsigned)mired,
              (unsigned)amber_pwm, (unsigned)white_pwm);
 }
@@ -376,9 +387,9 @@ static void fade_task(void *arg)
 
         // ---- Apply output (only once) ----
         if (did_work) {
-            // This must apply using the CURRENT CT value (s_ct.cur)
-            led_apply_brightness_and_ct(s_fade.cur, s_fade.mired);
-            s_fade.mired = s_ct.cur;
+            uint16_t ct_now = s_ct.cur;
+            s_fade.mired = ct_now;                       // keep state consistent
+            led_apply_brightness_and_ct(s_fade.cur, ct_now);
             vTaskDelay(step_delay);
         } else {
             vTaskDelay(pdMS_TO_TICKS(10));
@@ -469,28 +480,29 @@ esp_err_t tlc59108_init(i2c_master_bus_handle_t bus)
     return ESP_OK;
 }
 
+
 // ---------- convenience / misc ----------
 
 esp_err_t tlc_set_all_brightness(uint8_t value)
 {
     ESP_LOGI(TAG, "Setting all brightness to %d", value);
-    return tlc59108_set_group_pwm(all_channels, 6, value);
+    return tlc59108_set_group_pwm(all_channels, ALL_CH_COUNT, value);
 }
 
 esp_err_t tlc_set_all_brightness_percentage(uint8_t percentage)
 {
     uint8_t value = percentage_to_8bit(percentage);
-    return tlc59108_set_group_pwm(all_channels, 6, value);
+    return tlc59108_set_group_pwm(all_channels, ALL_CH_COUNT, value);
 }
 
 esp_err_t tlc_set_white_brightness(uint8_t value)
 {
-    return tlc59108_set_group_pwm(white_channels, 3, value);
+    return tlc59108_set_group_pwm(white_channels, WHITE_CH_COUNT, value);
 }
 
 esp_err_t tlc_set_amber_brightness(uint8_t value)
 {
-    return tlc59108_set_group_pwm(amber_channels, 3, value);
+    return tlc59108_set_group_pwm(amber_channels, AMBER_CH_COUNT, value);
 }
 
 void tlc_breathe_update(float dt_seconds)
@@ -538,9 +550,8 @@ void tlc_boot_led_sequence(void)
 {
     const int step = 20;
     const int max_val = 255;
-    const int num_channels = 6;
 
-    for (int ch = 0; ch < num_channels; ch++) {
+    for (int ch = 0; ch < ALL_CH_COUNT; ch++) {
         tlc59108_set_pwm(ch, 0);
     }
 
@@ -550,7 +561,7 @@ void tlc_boot_led_sequence(void)
         val += step;
         if (val > max_val) val = max_val;
 
-        for (int ch = 0; ch < num_channels; ch++) {
+        for (int ch = 0; ch < ALL_CH_COUNT; ch++) {
             tlc59108_set_pwm(ch, (uint8_t)val);
             vTaskDelay(pdMS_TO_TICKS(50));
         }
@@ -561,30 +572,29 @@ void tlc_boot_led_sequence(void)
         val -= step;
         if (val < 0) val = 0;
 
-        for (int ch = 0; ch < num_channels; ch++) {
+        for (int ch = 0; ch < ALL_CH_COUNT; ch++) {
             tlc59108_set_pwm(ch, (uint8_t)val);
             vTaskDelay(pdMS_TO_TICKS(50));
         }
         if (val == 0) break;
     }
 
-    for (int ch = 0; ch < num_channels; ch++) {
+    for (int ch = 0; ch < ALL_CH_COUNT; ch++) {
         tlc59108_set_pwm(ch, 0);
     }
 }
 
 void led_boot_trail_spin_animation(void)
 {
-    const uint8_t num_leds = 6;
     const uint8_t head_brightness = 255;
     const uint8_t trail_step = 60;
     const int spin_delay_ms = 120;
     const int rotations = 2;
 
     for (int r = 0; r < rotations; r++) {
-        for (int head = 0; head < num_leds; head++) {
-            for (int i = 0; i < num_leds; i++) {
-                int dist = (head - i + num_leds) % num_leds;
+        for (int head = 0; head < ALL_CH_COUNT ; head++) {
+            for (int i = 0; i < ALL_CH_COUNT; i++) {
+                int dist = (head - i + ALL_CH_COUNT) % ALL_CH_COUNT;
                 int value = head_brightness - dist * trail_step;
                 if (value < 0) value = 0;
                 tlc_set_channel_brightness(all_channels[i], (uint8_t)value);
@@ -594,16 +604,16 @@ void led_boot_trail_spin_animation(void)
     }
 
     for (int b = 0; b <= 255; b += 5) {
-        for (int i = 0; i < num_leds; i++) tlc_set_channel_brightness(all_channels[i], (uint8_t)b);
+        for (int i = 0; i < ALL_CH_COUNT; i++) tlc_set_channel_brightness(all_channels[i], (uint8_t)b);
         vTaskDelay(pdMS_TO_TICKS(15));
     }
 
     for (int b = 255; b >= 0; b -= 5) {
-        for (int i = 0; i < num_leds; i++) tlc_set_channel_brightness(all_channels[i], (uint8_t)b);
+        for (int i = 0; i < ALL_CH_COUNT; i++) tlc_set_channel_brightness(all_channels[i], (uint8_t)b);
         vTaskDelay(pdMS_TO_TICKS(15));
     }
 
-    for (int i = 0; i < num_leds; i++) tlc_set_channel_brightness(all_channels[i], 0);
+    for (int i = 0; i < ALL_CH_COUNT; i++) tlc_set_channel_brightness(all_channels[i], 0);
 }
 
 void zigbee_connection_confirmed_sequence(uint16_t brightness)

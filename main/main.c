@@ -57,26 +57,6 @@ void led_task(void *arg)
     }
 }
 
-void temperature_task_old_men_funke(void *arg) {
-    const TickType_t temp_delay = pdMS_TO_TICKS(2000);
-    float t_ms;
-    float rh;
-    while (1) {
-        float t = -1.0f; 
-        esp_err_t ret = tc74_read_temperature(&t);
-        
-
-        if (ret == ESP_OK) {
-            ESP_LOGI(TAG, "Temp = %.1f °C", t);
-            if (zigbee_is_connected()) {
-                zigbee_update_temperature(t);
-            }
-        } else {
-            ESP_LOGE(TAG, "I2C Read Failed: %s", esp_err_to_name(ret));
-        }
-        vTaskDelay(temp_delay);
-    }
-}
 
 void temperature_task(void *arg) {
     const TickType_t temp_delay = pdMS_TO_TICKS(2000);
@@ -257,9 +237,7 @@ void app_main(void)
     //tlc_breathe_init(0.2f);  // 0.25 Hz = slow breathing
 
     events_init();
-
-    const float dt = 0.01f;  // 10 ms tick
-    
+        
     esp_zb_platform_config_t config = {
         .radio_config = ESP_ZB_DEFAULT_RADIO_CONFIG(),
         .host_config = ESP_ZB_DEFAULT_HOST_CONFIG(),

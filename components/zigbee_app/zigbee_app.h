@@ -60,6 +60,5 @@ void zigbee_set_ct_and_report(uint16_t mired_value);
 void light_set_on(bool on, bool report_zigbee);
 bool light_is_on(void);
 
-static esp_err_t zb_cmd_received_handler(const esp_zb_zcl_cmd_info_t *info);
    
 

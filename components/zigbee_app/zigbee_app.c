@@ -22,8 +22,6 @@ int32_t new_mired = 0;
 int32_t mired = MID_TEMP;
 int32_t current_brightness = 128;
 
-static bool zigbee_connected = false;
-
 
 void SaveToNVS()
 {
@@ -333,127 +331,6 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
         break;
     }
     return ret;
-}
-   
-void esp_zb_task_uten_rh(void *pvParameters)
-{
-    esp_zb_cfg_t zb_nwk_cfg = ESP_ZB_ZED_CONFIG();
-    esp_zb_init(&zb_nwk_cfg);
-
-    // Set up basic cluster configuration
-    esp_zb_basic_cluster_cfg_t basic_cluster_cfg = {
-        .zcl_version = ESP_ZB_ZCL_BASIC_ZCL_VERSION_DEFAULT_VALUE,
-        .power_source = 0x03,
-    };
-    
-
-    uint32_t ApplicationVersion = 0x0001;
-    uint32_t StackVersion = 0x0002;
-    uint32_t HWVersion = 0x0002;
-    uint8_t ManufacturerName[] = {7, 'C', 'K', '-', 'H', 'o', 'm', 'e'}; // warning: this is in format {length, 'string'} :
-    uint8_t ModelIdentifier[] = {14, 'C', 'C', 'T', '-', 'S', 'm', 'a', 'r', 't', 'L', 'a', 'm', 'p'};
-    uint8_t DateCode[] = {8, '2', '0', '2', '5', '1', '2', '2', '6'};
-    esp_zb_attribute_list_t *esp_zb_basic_cluster = esp_zb_basic_cluster_create(&basic_cluster_cfg);
-    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_APPLICATION_VERSION_ID, &ApplicationVersion);
-    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_STACK_VERSION_ID, &StackVersion);
-    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_HW_VERSION_ID, &HWVersion);
-    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, ManufacturerName);
-    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, ModelIdentifier);
-    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_DATE_CODE_ID, DateCode);
-
-    // Set up identify cluster configuration
-    esp_zb_identify_cluster_cfg_t identify_cluster_cfg = {
-        .identify_time = 0,
-    };
-    esp_zb_attribute_list_t *esp_zb_identify_cluster = esp_zb_identify_cluster_create(&identify_cluster_cfg);
-
-    
-    // Set up on/off cluster configuration
-    esp_zb_on_off_cluster_cfg_t on_off_cfg = {
-        .on_off = 0,
-    };
-    esp_zb_attribute_list_t *esp_zb_on_off_cluster = esp_zb_on_off_cluster_create(&on_off_cfg);
-
-    // Set up color control cluster configuration
-    esp_zb_color_cluster_cfg_t esp_zb_color_cluster_cfg = { 
-        .current_x = ESP_ZB_ZCL_COLOR_CONTROL_CURRENT_X_DEF_VALUE,                          /*!<  The current value of the normalized chromaticity value x */
-        .current_y = ESP_ZB_ZCL_COLOR_CONTROL_CURRENT_Y_DEF_VALUE,                          /*!<  The current value of the normalized chromaticity value y */ 
-        .color_mode = 0x0002,                                                               /*!<  The mode which attribute determines the color of the device */ 
-        .options = ESP_ZB_ZCL_COLOR_CONTROL_OPTIONS_DEFAULT_VALUE,                          /*!<  The bitmap determines behavior of some cluster commands */ 
-        .enhanced_color_mode = ESP_ZB_ZCL_COLOR_CONTROL_ENHANCED_COLOR_MODE_DEFAULT_VALUE,  /*!<  The enhanced-mode which attribute determines the color of the device */ 
-        .color_capabilities = 0x0010,                                                       /*!<  Specifying the color capabilities of the device support the color control cluster */ 
-    };
-    esp_zb_attribute_list_t *esp_zb_color_cluster = esp_zb_color_control_cluster_create(&esp_zb_color_cluster_cfg);
-    // Add color control attributes
-    uint16_t color_attr = MID_TEMP;
-    uint16_t min_temp = MIN_TEMP;
-    uint16_t max_temp = MAX_TEMP;
-    esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMPERATURE_ID, &color_attr);
-    esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMP_PHYSICAL_MIN_MIREDS_ID, &min_temp);
-    esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMP_PHYSICAL_MAX_MIREDS_ID, &max_temp);
-    
-    // Set up level control cluster configuration
-    esp_zb_attribute_list_t *esp_zb_level_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL);
-    uint8_t level = 50;
-    esp_zb_level_cluster_add_attr(esp_zb_level_cluster, ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID, &level);
-
-    // Set up temperature measurement cluster configuration
-    esp_zb_temperature_meas_cluster_cfg_t temperature_meas_cfg = {
-        .measured_value = 0x8000,
-        .min_value = -4000,
-        .max_value = 12500,
-    };
-    esp_zb_attribute_list_t *esp_zb_temperature_meas_cluster = esp_zb_temperature_meas_cluster_create(&temperature_meas_cfg);
-    
-    // Create cluster list and add clusters
-    esp_zb_cluster_list_t *esp_zb_cluster_list = esp_zb_zcl_cluster_list_create();
-    esp_zb_cluster_list_add_basic_cluster(esp_zb_cluster_list, esp_zb_basic_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    esp_zb_cluster_list_add_identify_cluster(esp_zb_cluster_list, esp_zb_identify_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    esp_zb_cluster_list_add_on_off_cluster(esp_zb_cluster_list, esp_zb_on_off_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    esp_zb_cluster_list_add_temperature_meas_cluster(esp_zb_cluster_list, esp_zb_temperature_meas_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    
-    esp_zb_cluster_list_add_level_cluster(esp_zb_cluster_list, esp_zb_level_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-
-    esp_zb_cluster_list_add_color_control_cluster(esp_zb_cluster_list, esp_zb_color_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    esp_zb_cluster_list_update_color_control_cluster(esp_zb_cluster_list, esp_zb_color_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-
-    // Create endpoint list
-    esp_zb_ep_list_t *esp_zb_ep_list = esp_zb_ep_list_create();
-
-    // Create endpoint configuration
-    esp_zb_endpoint_config_t zb_endpoint_config = {
-        .endpoint =  HA_COLOR_DIMMABLE_LIGHT_ENDPOINT,                       /*!< Endpoint */
-        .app_profile_id =  ESP_ZB_AF_HA_PROFILE_ID,               /*!< Application profile identifier */
-        .app_device_id =  ESP_ZB_HA_ON_OFF_LIGHT_DEVICE_ID,       /*!< Application device identifier */
-        .app_device_version = 4,                                  /*!< Application device version */
-    };
-    // Add endpoint to endpoint list
-    esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_cluster_list, zb_endpoint_config);
-    // Register device endpoint list
-    esp_zb_device_register(esp_zb_ep_list);
-
-    // Configure temperature reporting
-    esp_zb_zcl_reporting_info_t temperature_report = {
-        .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI,
-        .ep = HA_COLOR_DIMMABLE_LIGHT_ENDPOINT,
-        .cluster_id = ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT,
-        .cluster_role = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        .dst.profile_id = ESP_ZB_AF_HA_PROFILE_ID,
-        .u.send_info.min_interval = 2,
-        .u.send_info.max_interval = 10,
-        .u.send_info.def_min_interval = 2,
-        .u.send_info.def_max_interval = 10,
-        .u.send_info.delta.u16 = 0, 
-        .attr_id = ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_VALUE_ID,
-        .manuf_code = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC,
-    };
-
-    esp_zb_zcl_update_reporting_info(&temperature_report);
-
-    esp_zb_core_action_handler_register(zb_action_handler);
-    esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
-    ESP_ERROR_CHECK(esp_zb_start(false));
-    esp_zb_stack_main_loop();
 }
 
 void esp_zb_task(void *pvParameters)
