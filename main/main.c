@@ -173,6 +173,13 @@ static void act_commit_ct(uint16_t mired_new, void *ctx)
 
 void app_main(void)
 {
+    esp_log_level_set("*", ESP_LOG_INFO);
+    esp_log_level_set("ZCL", ESP_LOG_DEBUG);
+    esp_log_level_set("ZB_ZCL", ESP_LOG_DEBUG);
+    esp_log_level_set("ESP_ZB_ZCL", ESP_LOG_DEBUG);
+    esp_log_level_set("ZIGBEE", ESP_LOG_DEBUG);
+    esp_log_level_set("ESP_ZB", ESP_LOG_DEBUG);
+    
     status_led_config_t led_cfg = {
         .gpio_red = 19,
         .gpio_yellow = 20,
@@ -237,7 +244,7 @@ void app_main(void)
     //tlc_breathe_init(0.2f);  // 0.25 Hz = slow breathing
 
     events_init();
-        
+
     esp_zb_platform_config_t config = {
         .radio_config = ESP_ZB_DEFAULT_RADIO_CONFIG(),
         .host_config = ESP_ZB_DEFAULT_HOST_CONFIG(),

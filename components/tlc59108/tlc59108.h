@@ -36,7 +36,7 @@ void tlc_breathe_update(float dt_seconds);
 void tlc_set_breathing_enabled(bool enabled);
 
 void tlc_set_channel_brightness(uint8_t channel, uint8_t value);
-void tlc_set_group_brightness(uint8_t *channels, int count, uint8_t value);
+void tlc_set_group_brightness(const uint8_t *channels, int count, uint8_t value);
 
 uint8_t percentage_to_8bit(uint8_t percentage);
 uint8_t tlc_get_white_brightness(void);
@@ -48,6 +48,7 @@ void zigbee_connection_confirmed_sequence(uint16_t brightness);
 void light_toggle_handler(void);
 
 void tlc_set_logical_brightness_smooth(uint8_t target, uint16_t mired_now);
+void tlc_set_logical_brightness_smooth_ms(uint8_t target, uint16_t mired_now, uint32_t transition_ms);
 void tlc_set_ct_mired(uint16_t new_mired);
 void tlc_set_ct_mired_smooth(uint16_t target_mired, uint32_t transition_ms);
 

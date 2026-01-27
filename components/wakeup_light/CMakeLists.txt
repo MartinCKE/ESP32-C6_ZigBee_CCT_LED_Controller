@@ -1,0 +1,10 @@
+idf_component_register(
+    SRCS
+        "wakeup_light.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        nvs_flash
+        zigbee_app
+        tlc59108
+)

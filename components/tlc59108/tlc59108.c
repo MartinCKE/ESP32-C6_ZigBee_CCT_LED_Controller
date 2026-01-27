@@ -63,9 +63,12 @@ static uint8_t s_out_white = 0;
 
 // Fade engine state (logical brightness 0..255)
 typedef struct {
-    uint8_t  cur;        // current logical brightness
-    uint8_t  target;     // target logical brightness
-    uint16_t mired;      // mired used for mixing during fade
+    uint8_t  cur;
+    uint8_t  start;
+    uint8_t  target;
+    uint16_t mired;
+    uint32_t transition_ms;
+    uint32_t elapsed_ms;
     bool     running;
 } fade_t;
 
@@ -227,7 +230,7 @@ void tlc_set_channel_brightness(uint8_t channel, uint8_t value)
     tlc_write_reg(REG_PWM0 + channel, value);
 }
 
-void tlc_set_group_brightness(uint8_t *channels, int count, uint8_t value)
+void tlc_set_group_brightness(const uint8_t *channels, int count, uint8_t value)
 {
     for (int i = 0; i < count; i++) {
         tlc_set_channel_brightness(channels[i], value);
@@ -328,8 +331,8 @@ void led_apply_brightness_and_ct(uint16_t brightness, uint16_t mired)
     uint8_t amber_pwm = (uint8_t)a;
     uint8_t white_pwm = (uint8_t)w;
 
-    tlc_set_group_brightness((uint8_t*)amber_channels, AMBER_CH_COUNT, amber_pwm);
-    tlc_set_group_brightness((uint8_t*)white_channels, WHITE_CH_COUNT, white_pwm);
+    tlc_set_group_brightness(amber_channels, AMBER_CH_COUNT, amber_pwm);
+    tlc_set_group_brightness(white_channels, WHITE_CH_COUNT, white_pwm);
 
     s_out_amber = amber_pwm;
     s_out_white = white_pwm;
@@ -356,9 +359,22 @@ static void fade_task(void *arg)
         bool did_work = false;
 
         // ---- Brightness step ----
+        const uint32_t tick_ms = 2;
+
         if (s_fade.running && s_fade.cur != s_fade.target) {
-            if (s_fade.cur < s_fade.target) s_fade.cur++;
-            else s_fade.cur--;
+            s_fade.elapsed_ms += tick_ms;
+            uint32_t T = s_fade.transition_ms;
+            if (T < tick_ms) T = tick_ms;
+
+            if (s_fade.elapsed_ms >= T) {
+                s_fade.cur = s_fade.target;
+            } else {
+                int32_t diff = (int32_t)s_fade.target - (int32_t)s_fade.start;
+                int32_t val  = (int32_t)s_fade.start + (diff * (int32_t)s_fade.elapsed_ms) / (int32_t)T;
+                if (val < 0) val = 0;
+                if (val > 255) val = 255;
+                s_fade.cur = (uint8_t)val;
+            }
             did_work = true;
         } else {
             s_fade.running = false;
@@ -388,7 +404,7 @@ static void fade_task(void *arg)
         // ---- Apply output (only once) ----
         if (did_work) {
             uint16_t ct_now = s_ct.cur;
-            s_fade.mired = ct_now;                       // keep state consistent
+            s_fade.mired = ct_now;
             led_apply_brightness_and_ct(s_fade.cur, ct_now);
             vTaskDelay(step_delay);
         } else {
@@ -397,9 +413,12 @@ static void fade_task(void *arg)
     }
 }
 
-
-
 void tlc_set_logical_brightness_smooth(uint8_t target, uint16_t mired_now)
+{
+    tlc_set_logical_brightness_smooth_ms(target, mired_now, 400); // keep old “feel”
+}
+
+void tlc_set_logical_brightness_smooth_old(uint8_t target, uint16_t mired_now)
 {
     // If we are currently at 0 output (or not running), start cur from real output
     uint8_t cur_hw = get_current_logical_brightness_from_outputs();
@@ -416,6 +435,23 @@ void tlc_set_logical_brightness_smooth(uint8_t target, uint16_t mired_now)
     ESP_LOGI(TAG, "tlc_set_logical_brightness: cur=%u target=%u mired=%u",
              (unsigned)s_fade.cur, (unsigned)s_fade.target, (unsigned)s_fade.mired);
 }
+
+void tlc_set_logical_brightness_smooth_ms(uint8_t target, uint16_t mired_now, uint32_t transition_ms)
+{
+    uint8_t cur_hw = get_current_logical_brightness_from_outputs();
+
+    if (!s_fade.running) {
+        s_fade.cur = cur_hw;
+    }
+
+    s_fade.start = s_fade.cur;
+    s_fade.target = target;
+    s_fade.mired  = mired_now;
+    s_fade.transition_ms = (transition_ms < 1) ? 1 : transition_ms;
+    s_fade.elapsed_ms = 0;
+    s_fade.running = true;
+}
+
 
 void tlc_set_ct_mired_smooth(uint16_t target_mired, uint32_t transition_ms)
 {
