@@ -23,29 +23,18 @@ int32_t new_mired = 0;
 int32_t mired = MID_TEMP;
 int32_t current_brightness = 128;
 
-#define ZCL_WAKEUP_CLUSTER_ID          0xFC10   // manufacturer-specific
+#define ZCL_WAKEUP_CLUSTER_ID          0xFF10   // manufacturer-specific
 #define ZCL_WAKEUP_MANUFACTURER_CODE   0x1234   // pick your own
 
-#define ATTR_WAKEUP_START_BRI          0xF001   // U8
-#define ATTR_WAKEUP_END_BRI            0xF002   // U8
-#define ATTR_WAKEUP_START_CT           0xF003   // U16
-#define ATTR_WAKEUP_END_CT             0xF004   // U16
-#define ATTR_WAKEUP_FADE_TIME_MS       0xF005   // U32
-#define ATTR_WAKEUP_ENABLED            0xF006   // BOOL
+#define ATTR_WAKEUP_START_BRI          0x0001   // U8
+#define ATTR_WAKEUP_END_BRI            0x0002   // U8
+#define ATTR_WAKEUP_START_CT           0x0003   // U16
+#define ATTR_WAKEUP_END_CT             0x0004   // U16
+#define ATTR_WAKEUP_FADE_TIME_MS       0x0005   // U32
+#define ATTR_WAKEUP_START            0x0006   // BOOL
 
 #define CMD_WAKEUP_START               0x00
 #define CMD_WAKEUP_STOP                0x01
-
-// TEST
-// Use IDs in manufacturer-specific range to avoid collisions in Basic cluster
-#define WAKEUP_MFG_CODE   0x1234   // pick your own
-#define BASIC_ATTR_WAKEUP_START_BRI    0xF001
-#define BASIC_ATTR_WAKEUP_END_BRI      0xF002
-#define BASIC_ATTR_WAKEUP_START_CT     0xF003
-#define BASIC_ATTR_WAKEUP_END_CT       0xF004
-#define BASIC_ATTR_WAKEUP_FADE_TIME_MS 0xF005
-#define BASIC_ATTR_WAKEUP_ENABLED      0xF006
-// TEST END
 
 #define CMD_WAKEUP_SET_CONFIG  0x10
 
@@ -56,6 +45,11 @@ static uint16_t s_wakeup_start_ct     = 455;
 static uint16_t s_wakeup_end_ct       = 200;
 static uint32_t s_wakeup_fade_time_ms = 15 * 60 * 1000UL;
 static uint8_t  s_wakeup_enabled      = 1; // use uint8_t for ZCL bool storage
+
+
+static uint16_t rd_u16_le(const uint8_t *p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
+static uint32_t rd_u32_le(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
+
 
 void SaveToNVS()
 {
@@ -161,6 +155,7 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                     
                 }
             break;
+            
         case ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL:
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID && message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_U8) {
                 light_level = message->attribute.data.value ? *(uint8_t *)message->attribute.data.value : light_level;
@@ -179,54 +174,7 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                 ESP_LOGW(TAG, "Level Control cluster data: attribute(0x%x), type(0x%x)", message->attribute.id, message->attribute.data.type);
             }
             break;
-        case ESP_ZB_ZCL_CLUSTER_ID_BASIC:
-            if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_U8 ||
-                message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_U16 ||
-                message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_U32 ||
-                message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_BOOL) {
-
-                wakeup_cfg_t cfg = wakeup_get();
-
-                switch (message->attribute.id) {
-                    case BASIC_ATTR_WAKEUP_START_BRI:
-                        cfg.start_bri = *(uint8_t*)message->attribute.data.value;
-                        s_wakeup_start_bri = cfg.start_bri;
-                        break;
-
-                    case BASIC_ATTR_WAKEUP_END_BRI:
-                        cfg.end_bri = *(uint8_t*)message->attribute.data.value;
-                        s_wakeup_end_bri = cfg.end_bri;
-                        break;
-
-                    case BASIC_ATTR_WAKEUP_START_CT:
-                        cfg.start_ct_mired = *(uint16_t*)message->attribute.data.value;
-                        s_wakeup_start_ct = cfg.start_ct_mired;
-                        break;
-
-                    case BASIC_ATTR_WAKEUP_END_CT:
-                        cfg.end_ct_mired = *(uint16_t*)message->attribute.data.value;
-                        s_wakeup_end_ct = cfg.end_ct_mired;
-                        break;
-
-                    case BASIC_ATTR_WAKEUP_FADE_TIME_MS:
-                        cfg.fade_time_ms = *(uint32_t*)message->attribute.data.value;
-                        s_wakeup_fade_time_ms = cfg.fade_time_ms;
-                        break;
-
-                    case BASIC_ATTR_WAKEUP_ENABLED:
-                        cfg.enabled = (*(uint8_t*)message->attribute.data.value) ? 1 : 0;
-                        s_wakeup_enabled = cfg.enabled ? 1 : 0;
-                        break;
-
-                    default:
-                        break;
-                }
-
-                wakeup_set(&cfg);
-                wakeup_save_to_nvs();
-            }
-            break;
-
+        
         case ZCL_WAKEUP_CLUSTER_ID: {
             wakeup_cfg_t cfg = wakeup_get();
             ESP_LOGW(TAG, "FC10 write attr=0x%04x type=0x%02x", message->attribute.id, message->attribute.data.type);
@@ -268,7 +216,7 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                         ESP_LOGI(TAG, "Wakeup end color temp set to %d mired", cfg.end_ct_mired);
                     }
                     break;
-                case ATTR_WAKEUP_ENABLED:
+                case ATTR_WAKEUP_START:
                     if (message->attribute.data.value && message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_BOOL) {
                         cfg.enabled = *(bool*)message->attribute.data.value;
                         s_wakeup_enabled = cfg.enabled ? 1 : 0;
@@ -454,6 +402,30 @@ void zigbee_update_temperature(float temperature)
 }
 
 
+static esp_err_t zb_action_handler_testing(esp_zb_core_action_callback_id_t callback_id, const void *message) {
+    switch (callback_id) {
+        // This is often where Manufacturer-Specific writes land in older SDKs
+        case ESP_ZB_CORE_CMD_CUSTOM_CLUSTER_REQ_CB_ID: {
+            esp_zb_zcl_custom_cluster_command_message_t *cmd_msg = (esp_zb_zcl_custom_cluster_command_message_t *)message;
+            ESP_LOGW(TAG, "Custom Cluster Received: 0x%04x", cmd_msg->info.cluster);
+            break;
+        }
+
+        case ESP_ZB_CORE_SET_ATTR_VALUE_CB_ID: {
+            esp_zb_zcl_set_attr_value_message_t *set_attr_msg = (esp_zb_zcl_set_attr_value_message_t *)message;
+            ESP_LOGI(TAG, "Standard Attr Set: Cluster 0x%04x, Attr 0x%04x", 
+                     set_attr_msg->info.cluster, 
+                     set_attr_msg->attribute.id);
+            break;
+        }
+        
+        default:
+            ESP_LOGD(TAG, "Other Zigbee action: 0x%x", callback_id);
+            break;
+    }
+    return ESP_OK;
+}
+
 static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const void *message)
 {
     esp_err_t ret = ESP_OK;
@@ -466,7 +438,7 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
     case ESP_ZB_CORE_CMD_DEFAULT_RESP_CB_ID:
         ret = zb_default_resp_handler((const esp_zb_zcl_cmd_default_resp_message_t *)message);
         break;
-
+    
     // might add later
     // case ESP_ZB_CORE_REPORT_ATTR_CB_ID:
     // case ESP_ZB_CORE_CMD_READ_ATTR_RESP_CB_ID:
@@ -508,81 +480,24 @@ void esp_zb_task(void *pvParameters)
     esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_DATE_CODE_ID, DateCode);
 
     esp_zb_attribute_list_t *wakeup_cluster = esp_zb_zcl_attr_list_create(ZCL_WAKEUP_CLUSTER_ID);
-    /*
+    
     ESP_ERROR_CHECK(esp_zb_cluster_add_attr(wakeup_cluster, ZCL_WAKEUP_CLUSTER_ID, ATTR_WAKEUP_START_BRI,
     ESP_ZB_ZCL_ATTR_TYPE_U8, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &s_wakeup_start_bri));
 
     ESP_ERROR_CHECK(esp_zb_cluster_add_attr(wakeup_cluster, ZCL_WAKEUP_CLUSTER_ID, ATTR_WAKEUP_END_BRI,
-    ESP_ZB_ZCL_ATTR_TYPE_U8, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &s_wakeup_end_bri));
+        ESP_ZB_ZCL_ATTR_TYPE_U8, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &s_wakeup_end_bri));
 
     ESP_ERROR_CHECK(esp_zb_cluster_add_attr(wakeup_cluster, ZCL_WAKEUP_CLUSTER_ID, ATTR_WAKEUP_START_CT,
-    ESP_ZB_ZCL_ATTR_TYPE_U16, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &s_wakeup_start_ct));
+        ESP_ZB_ZCL_ATTR_TYPE_U16, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &s_wakeup_start_ct));
 
     ESP_ERROR_CHECK(esp_zb_cluster_add_attr(wakeup_cluster, ZCL_WAKEUP_CLUSTER_ID, ATTR_WAKEUP_END_CT,
-    ESP_ZB_ZCL_ATTR_TYPE_U16, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &s_wakeup_end_ct));
+        ESP_ZB_ZCL_ATTR_TYPE_U16, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &s_wakeup_end_ct));
 
     ESP_ERROR_CHECK(esp_zb_cluster_add_attr(wakeup_cluster, ZCL_WAKEUP_CLUSTER_ID, ATTR_WAKEUP_FADE_TIME_MS,
-    ESP_ZB_ZCL_ATTR_TYPE_U32, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &s_wakeup_fade_time_ms));
-    
-    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(wakeup_cluster, ZCL_WAKEUP_CLUSTER_ID, ATTR_WAKEUP_ENABLED,
-    ESP_ZB_ZCL_ATTR_TYPE_BOOL, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &s_wakeup_enabled));
-    */
-    // TEST
-    ESP_ERROR_CHECK(esp_zb_cluster_add_manufacturer_attr(
-        wakeup_cluster,
-        ZCL_WAKEUP_CLUSTER_ID,              // 0xFC10  ✅ not BASIC
-        ATTR_WAKEUP_START_BRI,              // 0x0001  ✅ not F001
-        ZCL_WAKEUP_MANUFACTURER_CODE,       // 0x1234
-        ESP_ZB_ZCL_ATTR_TYPE_U8,
-        ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE,
-        &s_wakeup_start_bri));
+        ESP_ZB_ZCL_ATTR_TYPE_U32, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &s_wakeup_fade_time_ms));
 
-    ESP_ERROR_CHECK(esp_zb_cluster_add_manufacturer_attr(
-        wakeup_cluster,
-        ZCL_WAKEUP_CLUSTER_ID,
-        ATTR_WAKEUP_END_BRI,
-        ZCL_WAKEUP_MANUFACTURER_CODE,
-        ESP_ZB_ZCL_ATTR_TYPE_U8,
-        ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE,
-        &s_wakeup_end_bri));
-
-    ESP_ERROR_CHECK(esp_zb_cluster_add_manufacturer_attr(
-        wakeup_cluster,
-        ZCL_WAKEUP_CLUSTER_ID,
-        ATTR_WAKEUP_START_CT,
-        ZCL_WAKEUP_MANUFACTURER_CODE,
-        ESP_ZB_ZCL_ATTR_TYPE_U16,
-        ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE,
-        &s_wakeup_start_ct));
-
-    ESP_ERROR_CHECK(esp_zb_cluster_add_manufacturer_attr(
-        wakeup_cluster,
-        ZCL_WAKEUP_CLUSTER_ID,
-        ATTR_WAKEUP_END_CT,
-        ZCL_WAKEUP_MANUFACTURER_CODE,
-        ESP_ZB_ZCL_ATTR_TYPE_U16,
-        ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE,
-        &s_wakeup_end_ct));
-
-    ESP_ERROR_CHECK(esp_zb_cluster_add_manufacturer_attr(
-        wakeup_cluster,
-        ZCL_WAKEUP_CLUSTER_ID,
-        ATTR_WAKEUP_FADE_TIME_MS,
-        ZCL_WAKEUP_MANUFACTURER_CODE,
-        ESP_ZB_ZCL_ATTR_TYPE_U32,
-        ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE,
-        &s_wakeup_fade_time_ms));
-
-    ESP_ERROR_CHECK(esp_zb_cluster_add_manufacturer_attr(
-        wakeup_cluster,
-        ZCL_WAKEUP_CLUSTER_ID,
-        ATTR_WAKEUP_ENABLED,
-        ZCL_WAKEUP_MANUFACTURER_CODE,
-        ESP_ZB_ZCL_ATTR_TYPE_BOOL,
-        ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE,
-        &s_wakeup_enabled));
-    
-    // TEST END
+    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(wakeup_cluster, ZCL_WAKEUP_CLUSTER_ID, ATTR_WAKEUP_START,
+        ESP_ZB_ZCL_ATTR_TYPE_BOOL, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &s_wakeup_enabled));
 
     // ---------------- Identify cluster ----------------
     esp_zb_identify_cluster_cfg_t identify_cluster_cfg = {
@@ -634,44 +549,6 @@ void esp_zb_task(void *pvParameters)
         .max_value      = 10000,
     };
     esp_zb_attribute_list_t *esp_zb_humidity_meas_cluster = esp_zb_humidity_meas_cluster_create(&humidity_meas_cfg);
-
-    // ---------------- Wakeup manufacturer-specific cluster ----------------
-    // Sync your persisted config into ZCL attribute backing variables BEFORE registration
-    /*
-    wakeup_cfg_t wcfg = wakeup_get();
-    s_wakeup_start_bri    = wcfg.start_bri;
-    s_wakeup_end_bri      = wcfg.end_bri;
-    s_wakeup_start_ct     = wcfg.start_ct_mired;
-    s_wakeup_end_ct       = wcfg.end_ct_mired;
-    s_wakeup_fade_time_ms = wcfg.fade_time_ms;
-    s_wakeup_enabled      = wcfg.enabled ? 1 : 0; // store as u8 for ZCL BOOL
-
-    
-
-    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(
-        wakeup_cluster, ZCL_WAKEUP_CLUSTER_ID, ATTR_WAKEUP_START_BRI,
-        ESP_ZB_ZCL_ATTR_TYPE_U8, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &s_wakeup_start_bri));
-
-    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(
-        wakeup_cluster, ZCL_WAKEUP_CLUSTER_ID, ATTR_WAKEUP_END_BRI,
-        ESP_ZB_ZCL_ATTR_TYPE_U8, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &s_wakeup_end_bri));
-
-    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(
-        wakeup_cluster, ZCL_WAKEUP_CLUSTER_ID, ATTR_WAKEUP_START_CT,
-        ESP_ZB_ZCL_ATTR_TYPE_U16, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &s_wakeup_start_ct));
-
-    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(
-        wakeup_cluster, ZCL_WAKEUP_CLUSTER_ID, ATTR_WAKEUP_END_CT,
-        ESP_ZB_ZCL_ATTR_TYPE_U16, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &s_wakeup_end_ct));
-
-    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(
-        wakeup_cluster, ZCL_WAKEUP_CLUSTER_ID, ATTR_WAKEUP_FADE_TIME_MS,
-        ESP_ZB_ZCL_ATTR_TYPE_U32, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &s_wakeup_fade_time_ms));
-
-    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(
-        wakeup_cluster, ZCL_WAKEUP_CLUSTER_ID, ATTR_WAKEUP_ENABLED,
-        ESP_ZB_ZCL_ATTR_TYPE_BOOL, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &s_wakeup_enabled));
-    */
 
     // ---------------- Cluster list ----------------
     esp_zb_cluster_list_t *esp_zb_cluster_list = esp_zb_zcl_cluster_list_create();
@@ -770,9 +647,11 @@ void esp_zb_task(void *pvParameters)
     );
     ESP_LOGW(TAG, "Lookup FC10/0004 => %p data_p=%p", t4, t4 ? t4->data_p : NULL);
 
+    esp_zb_set_node_descriptor_manufacturer_code(0x1234);
+
     ESP_ERROR_CHECK(esp_zb_start(false));
     esp_zb_stack_main_loop();
-    }
+}
 
 
 void esp_zb_task_old(void *pvParameters)

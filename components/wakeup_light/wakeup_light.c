@@ -105,7 +105,6 @@ esp_err_t wakeup_save_to_nvs(void)
 
 esp_err_t wakeup_init(void)
 {
-    // nvs_flash_init() is done in main already; we just try to load
     (void)wakeup_load_from_nvs();
     return ESP_OK;
 }
