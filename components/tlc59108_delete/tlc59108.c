@@ -57,6 +57,7 @@ static const char *TAG = "TLC9108";
 static bool light_on = true;
 static uint8_t s_last_nonzero_bri = 128;   // fallback if NVS/level ever goes 0
 
+// Software-tracked current output (post-mix)
 static uint8_t s_out_amber = 0;
 static uint8_t s_out_white = 0;
 
@@ -110,11 +111,12 @@ void light_remember_brightness(uint8_t bri)
 
 void light_set_on(bool on, bool report_zigbee)
 {
+    // If Zigbee repeats "On" or "Off", still enforce the output target.
     light_on = on;
     ESP_LOGI(TAG, "light_set_on: on=%d report_zigbee=%d", (int)on, (int)report_zigbee);
 
     if (!on) {
-        // Fade down to 0 without changing current_brightness
+        // Fade down to 0, do NOT change current_brightness
         tlc_set_logical_brightness_smooth(0, (uint16_t)mired);
     } else {
         // Pick a non-zero brightness target
@@ -206,6 +208,7 @@ void tlc_reset_pulse(void)
     vTaskDelay(pdMS_TO_TICKS(1));
 }
 
+// ---------- PWM primitives ----------
 
 esp_err_t tlc59108_set_pwm(uint8_t channel, uint8_t value)
 {
@@ -234,6 +237,7 @@ void tlc_set_group_brightness(const uint8_t *channels, int count, uint8_t value)
     }
 }
 
+// ---------- brightness getters (fixed bounds) ----------
 
 void tlc_get_group_brightness(uint8_t *amber, uint8_t *white)
 {
@@ -593,7 +597,7 @@ void tlc_dump_registers(void)
 void tlc_boot_led_sequence(void)
 {
     const int step = 20;
-    const int max_val = 20;
+    const int max_val = 255;
 
     for (int ch = 0; ch < ALL_CH_COUNT; ch++) {
         tlc59108_set_pwm(ch, 0);
@@ -630,7 +634,7 @@ void tlc_boot_led_sequence(void)
 
 void led_boot_trail_spin_animation(void)
 {
-    const uint8_t head_brightness = 20;
+    const uint8_t head_brightness = 255;
     const uint8_t trail_step = 60;
     const int spin_delay_ms = 120;
     const int rotations = 2;
@@ -671,7 +675,7 @@ void zigbee_connection_confirmed_sequence(uint16_t brightness)
     for (int i = 0; i < 3; i++) {
         tlc_set_all_brightness(0);
         vTaskDelay(on_time);
-        tlc_set_all_brightness(50);
+        tlc_set_all_brightness(80);
         vTaskDelay(off_time);
     }
     tlc_set_all_brightness(brightness);

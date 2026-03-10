@@ -29,12 +29,15 @@ typedef struct {
     void (*commit_ct_mired)(uint16_t mired, void *user_ctx);
 
     void (*mode_changed)(touch_hold_mode_t mode, void *user_ctx);
+    //void (*user_interaction)(void *user_ctx); // called on press
 
     // Optional: read current values so hold starts from the true current state
     // (recommended if Zigbee can change brightness/CT externally)
     //bool     (*get_power)(void *user_ctx);           // optional
     uint8_t  (*get_brightness)(void *user_ctx);      // optional
     uint16_t (*get_ct_mired)(void *user_ctx);        // optional
+
+    bool (*user_interaction)(void *user_ctx); // return true to consume press (no tap)
 } touch_sensor_actions_t;
 
 typedef struct {
@@ -81,6 +84,8 @@ esp_err_t touch_sensor_stop(void);
 
 /** Current hold mode (brightness vs CT). */
 touch_hold_mode_t touch_sensor_get_hold_mode(void);
+
+
 
 #ifdef __cplusplus
 }

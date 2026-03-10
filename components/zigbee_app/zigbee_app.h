@@ -59,6 +59,7 @@ void zigbee_set_level_and_report(uint8_t level);
 void zigbee_set_ct_and_report(uint16_t mired_value);
 void light_set_on(bool on, bool report_zigbee);
 bool light_is_on(void);
+void zigbee_wakeup_cancel_and_report(void);
 
    
 

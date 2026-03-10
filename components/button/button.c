@@ -22,11 +22,9 @@ typedef struct {
 
     bool long_reported;
 
-    // single/double handling
     bool waiting_second;
     int64_t first_release_us;
 
-    // event queueing: single-slot (good enough for button usage)
     button_event_t pending_event;
 } button_ctx_t;
 
@@ -39,7 +37,6 @@ static inline int read_level(void)
 
 static inline bool is_pressed_level(int level)
 {
-    // active_low -> pressed == 0
     return s_btn.cfg.active_low ? (level == 0) : (level == 1);
 }
 
@@ -48,7 +45,6 @@ static inline int64_t now_us(void)
     return esp_timer_get_time();
 }
 
-// ISR: do the minimum; wake the task.
 static void IRAM_ATTR button_isr_handler(void *arg)
 {
     (void)arg;
@@ -67,7 +63,6 @@ static void IRAM_ATTR button_isr_handler(void *arg)
 
 static void set_pending_event(button_event_t ev)
 {
-    // Overwrite is fine for a button (events are rare).
     s_btn.pending_event = ev;
 }
 
@@ -106,7 +101,7 @@ esp_err_t button_init(const button_config_t *cfg, TaskHandle_t notify_task)
     esp_err_t err = gpio_config(&io);
     if (err != ESP_OK) return err;
 
-    // Install ISR service once; if already installed, ESP_ERR_INVALID_STATE may occur.
+    // Install ISR service
     err = gpio_install_isr_service(0);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         return err;
@@ -133,7 +128,7 @@ esp_err_t button_init(const button_config_t *cfg, TaskHandle_t notify_task)
 esp_err_t button_deinit(void)
 {
     gpio_isr_handler_remove((gpio_num_t)s_btn.cfg.gpio_num);
-    // Note: we don't uninstall the ISR service globally since other code may use it.
+    // Don't uninstall the ISR service globally since other code may use it.
     s_btn = (button_ctx_t){0};
     return ESP_OK;
 }

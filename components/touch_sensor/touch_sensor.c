@@ -52,6 +52,8 @@ typedef struct {
     bool     cached_power;
     uint8_t  cached_brightness;
     uint16_t cached_ct_mired;
+
+    bool suppress_tap_once;
 } ctx_t;
 
 static ctx_t s;
@@ -142,15 +144,48 @@ static void IRAM_ATTR gpio_isr(void *arg)
 }
 
 // ---------- Gesture actions ----------
+static void on_press_old(void)
+{
+    s.pressed = true;
+    s.press_tick = now_tick();
+    s.hold_active = false;
+    if (s.cfg.actions.user_interaction) {
+        s.cfg.actions.user_interaction(s.cfg.user_ctx);
+    }
+    ESP_LOGI(TAG, "Touch PRESS");
+}
+
 static void on_press(void)
 {
     s.pressed = true;
     s.press_tick = now_tick();
     s.hold_active = false;
-    // hold_dir is chosen when hold starts (from next_hold_dir)
+
+    // default
+    s.suppress_tap_once = false;
+
+    // call optional user hook
+    if (s.cfg.actions.user_interaction) {
+        s.cfg.actions.user_interaction(s.cfg.user_ctx);
+
+        // ✅ if user hook requested consuming this press, suppress tap
+        if (s.cfg.user_ctx) {
+            // match the struct in main.c
+            typedef struct {
+                volatile bool consume_next_tap;
+            } touch_user_ctx_t;
+
+            touch_user_ctx_t *t = (touch_user_ctx_t *)s.cfg.user_ctx;
+            if (t->consume_next_tap) {
+                t->consume_next_tap = false;   // clear it
+                s.suppress_tap_once = true;
+                s.tap_count = 0;               // cancel any pending single/double tap logic
+            }
+        }
+    }
+
     ESP_LOGI(TAG, "Touch PRESS");
 }
-
 static void start_hold_if_needed(void)
 {
     if (!s.pressed || s.hold_active) return;
@@ -221,7 +256,14 @@ static void on_release(void)
                 s.cfg.actions.commit_ct_mired(s.cached_ct_mired, s.cfg.user_ctx);
         }
     return;
-}
+    }
+
+    if (s.suppress_tap_once) {
+        s.suppress_tap_once = false;
+        s.tap_count = 0;
+        ESP_LOGI(TAG, "Tap suppressed");
+        return;
+    }
 
     // tap candidate
     TickType_t now = now_tick();

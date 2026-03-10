@@ -6,17 +6,17 @@
 #include <string.h>
 #define TAG "MS8607"
 
-// I2C addresses (7-bit)
+// I2C addresses
 #define MS8607_ADDR_PT  0x76   // pressure + temperature
 #define MS8607_ADDR_RH  0x40   // humidity
 
-// PT commands (MS5637-like)
+// PT commands 
 #define PT_CMD_RESET        0x1E
 #define PT_CMD_ADC_READ    0x00
 #define PT_CMD_CONV_D2     0x58    // temperature, OSR=4096
 #define PT_CMD_PROM_BASE   0xA0
 
-// RH commands (HTU21D-like)
+// RH commands
 #define RH_CMD_SOFT_RESET  0xFE
 #define RH_CMD_TRIG_RH     0xF5
 
@@ -24,55 +24,6 @@ static i2c_master_dev_handle_t pt_dev = NULL;
 static i2c_master_dev_handle_t rh_dev = NULL;
 
 static uint16_t prom[8];
-
-// ---------------- CRC4 for PROM ----------------
-static uint8_t crc4(uint16_t *n_prom)
-{
-    uint16_t n_rem = 0;
-    uint16_t crc_read = n_prom[7] & 0x000F;
-
-    n_prom[7] &= 0xFFF0;
-
-    for (int cnt = 0; cnt < 16; cnt++) {
-        n_rem ^= (cnt & 1) ? (n_prom[cnt >> 1] & 0x00FF)
-                           : (n_prom[cnt >> 1] >> 8);
-        for (int n = 8; n > 0; n--) {
-            n_rem = (n_rem & 0x8000) ? (n_rem << 1) ^ 0x3000
-                                     : (n_rem << 1);
-        }
-    }
-
-    n_prom[7] |= crc_read;
-    return (n_rem >> 12) & 0xF;
-}
-
-// ---------------- PT helpers ----------------
-static esp_err_t pt_read_prom_first(void)
-{
-    for (int i = 0; i < 8; i++) {
-        uint8_t cmd = PT_CMD_PROM_BASE + (i * 2);
-        uint8_t rx[2];
-        ESP_LOGI(TAG, "%i : Reading PROM cmd 0x%02X", i, cmd);
-        esp_err_t ret = i2c_master_transmit(pt_dev, &cmd, 1, -1);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "PROM cmd 0x%02X write failed: %s", cmd, esp_err_to_name(ret));
-            return ret;
-        }
-
-        // Some boards/devices need a tiny settle time between STOP and next START
-        vTaskDelay(pdMS_TO_TICKS(1));
-
-        ret = i2c_master_receive(pt_dev, rx, 2, -1);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "PROM cmd 0x%02X read failed: %s", cmd, esp_err_to_name(ret));
-            return ret;
-        }
-
-        prom[i] = (rx[0] << 8) | rx[1];
-    }
-
-    return ESP_OK;
-}
 
 static uint16_t prom[8];
 
@@ -97,7 +48,6 @@ static esp_err_t pt_read_prom(void)
 
     prom[7] = 0; // datasheet CRC code expects this as subsidiary value :contentReference[oaicite:3]{index=3}
 
-    // CRC check below...
     return ESP_OK;
 }
 
@@ -177,7 +127,6 @@ esp_err_t ms8607_init(i2c_master_bus_handle_t bus)
     if (ret != ESP_OK) return ret;
 
     vTaskDelay(pdMS_TO_TICKS(3));
-    ESP_LOGI(TAG, "OK her");
     return pt_read_prom();
 }
 

@@ -15,14 +15,19 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "wakeup_light.h"
 
 static const char *TAG = "MAIN";
 
 static uint8_t get_bri(void *ctx) { (void)ctx; return (uint8_t)current_brightness; }
 static uint16_t get_ct(void *ctx) { (void)ctx; return (uint16_t)mired; }
 
+typedef struct {
+    volatile bool consume_next_tap;
+} touch_user_ctx_t;
 
-// I2C Scanner function
+static touch_user_ctx_t s_touch_ctx = {0};
+
 void scan_i2c(i2c_master_bus_handle_t bus)
 {
     ESP_LOGI(TAG, "Starting I2C scan...");
@@ -40,11 +45,7 @@ void led_task(void *arg)
 {
     const TickType_t loop_delay = pdMS_TO_TICKS(30);
     bool connection_confirmed = false;
-    //bool connected = false;
-    //int32_t counter = 0;
     while (1) {
-        //counter++;
-        //if (!connected) {
         if (!zigbee_is_connected()) {
             tlc_breathe_update(0.03f);
         }
@@ -59,16 +60,11 @@ void led_task(void *arg)
 
 
 void temperature_task(void *arg) {
-    const TickType_t temp_delay = pdMS_TO_TICKS(2000);
+    const TickType_t temp_delay = pdMS_TO_TICKS(5000);
     float t_ms = -1.0f;
     float rh = -1.0f;
     while (1) {
-        //float t_ms   = -1.0f;
-        //float rh     = -1.0f;
-
         esp_err_t ret_ms   = ms8607_read_temperature_humidity(&t_ms, &rh);
-
-        // Log all values in one line (with error info if something failed)
         if (ret_ms == ESP_OK) {
             ESP_LOGI(TAG, "MS8607: %.2f °C, %.1f %%RH", t_ms, rh);
             if (zigbee_is_connected()) {
@@ -95,9 +91,9 @@ static void button_task(void *arg)
         .gpio_num = 18,
         .active_low = true,
         .enable_internal_pullup = true,
-        .debounce_ms = 30,
-        .long_press_ms = 2000,
-        .double_press_window_ms = 500,
+        .debounce_ms = 50,
+        .long_press_ms = 1500,
+        .double_press_window_ms = 600,
     };
 
     ESP_ERROR_CHECK(button_init(&cfg, xTaskGetCurrentTaskHandle()));
@@ -125,6 +121,30 @@ static void button_task(void *arg)
     }
 }
 
+static void touch_user_interaction_cb(void *user_ctx)
+{
+    touch_user_ctx_t *t = (touch_user_ctx_t *)user_ctx;
+
+    if (wakeup_is_running()) {
+        ESP_LOGW("MAIN", "Touch press: stopping wakeup (freeze)");
+
+        wakeup_stop_cycle_freeze();
+
+        wakeup_cfg_t cfg = wakeup_get();
+        cfg.enabled = false;
+        wakeup_set(&cfg);
+        wakeup_save_to_nvs();
+
+        zigbee_set_level_and_report((uint8_t)current_brightness);
+        zigbee_set_ct_and_report((uint16_t)mired);
+        zigbee_wakeup_cancel_and_report();
+        // Tell touch driver to NOT treat this press/release as a tap
+        t->consume_next_tap = true;
+    }
+}
+
+
+
 static void act_toggle_power(void *ctx)
 {
     light_toggle_handler();
@@ -135,13 +155,13 @@ static void act_apply_brightness(uint8_t level, void *ctx)
     (void)ctx;
     if (level == 0) level = 1; // avoid zero brightness 
     current_brightness = level;
+    ESP_LOGI("MAIN", "Brightness apply: level=%u", (unsigned)level);
     led_apply_brightness_and_ct(current_brightness, mired);
 }
 
 static void act_commit_brightness(uint8_t level, void *ctx)
 {
     (void)ctx;
-    // current_brightness already set by apply, but keep it explicit:
     current_brightness = level;
     SaveToNVS();
     zigbee_set_level_and_report(level);
@@ -151,9 +171,7 @@ static void act_apply_ct(uint16_t mired_new, void *ctx)
 {
     (void)ctx;
     mired = mired_new;
-    //led_apply_brightness_and_ct(current_brightness, mired);
     ESP_LOGI("MAIN", "CT apply: mired_new=%u", (unsigned)mired_new);
-    //led_color_temperature_control(current_brightness, mired_new);
     tlc_set_ct_mired((uint16_t)mired); // 400ms feels nice
 }
 
@@ -163,12 +181,9 @@ static void act_commit_ct(uint16_t mired_new, void *ctx)
     mired = mired_new;
     ESP_LOGI("MAIN", "CT commit: mired_new=%u", (unsigned)mired_new);
     tlc_set_ct_mired((uint16_t)mired); // 400ms feels nice
-    //led_color_temperature_control(current_brightness, mired_new);
     SaveToNVS();
     zigbee_set_ct_and_report(mired_new);
 }
-
-
 
 
 void app_main(void)
@@ -179,7 +194,7 @@ void app_main(void)
     esp_log_level_set("ESP_ZB_ZCL", ESP_LOG_DEBUG);
     esp_log_level_set("ZIGBEE", ESP_LOG_DEBUG);
     esp_log_level_set("ESP_ZB", ESP_LOG_DEBUG);
-    
+
     status_led_config_t led_cfg = {
         .gpio_red = 19,
         .gpio_yellow = 20,
@@ -190,7 +205,7 @@ void app_main(void)
         .task_name = NULL,
     };
     status_led_start(&led_cfg);
-    status_led_boot_ok_start();  // plays 3s r<->y<->g ramp animation
+    status_led_boot_ok_start(); 
 
     touch_sensor_config_t cfg = {
         .gpio_num = 4,
@@ -209,8 +224,9 @@ void app_main(void)
             .commit_ct_mired   = act_commit_ct,
             .get_brightness    = get_bri,
             .get_ct_mired      = get_ct,
+            .user_interaction  = touch_user_interaction_cb,
         },
-        .user_ctx = NULL,
+        .user_ctx = &s_touch_ctx,
     };
     ESP_ERROR_CHECK(touch_sensor_start(&cfg));
 
@@ -227,16 +243,17 @@ void app_main(void)
 
     i2c_master_bus_handle_t bus;
     ESP_ERROR_CHECK(i2c_new_master_bus(&bus_cfg, &bus));
+
     scan_i2c(bus);
-    // Initialize temperature sensor
-    tc74_init(bus);
+    //tc74_init(bus);
+    // Initialize PTH sensor
+    
     ESP_ERROR_CHECK(ms8607_init(bus));
     vTaskDelay(pdMS_TO_TICKS(300)); // initial delay to allow Zigbee to connect first
     // Initiate LED driver
     tlc_reset_init();
     tlc59108_init(bus);
     tlc_power_set(true);   
-    //tlc_dump_registers();
     tlc_reset_init();
     led_boot_trail_spin_animation();
 
@@ -275,10 +292,6 @@ void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(400)); // Wait for tasks to settle
 
     while (1) {
-        //float t;
-        //if (tc74_read_temperature(&t) == ESP_OK) {
-        //    ESP_LOGI(TAG, "while loop Temp = %.1f °C", t);
-        //    }
-        vTaskDelay(pdMS_TO_TICKS(100)); // yield so IDLE resets WDT
+        vTaskDelay(pdMS_TO_TICKS(100)); 
     }
 }

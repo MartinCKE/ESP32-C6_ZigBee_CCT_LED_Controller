@@ -39,17 +39,14 @@ int32_t current_brightness = 128;
 #define CMD_WAKEUP_SET_CONFIG  0x10
 
 // ---- Wakeup cluster backing variables (ZCL attribute storage) ----
-static uint8_t  s_wakeup_start_bri    = 1;
-static uint8_t  s_wakeup_end_bri      = 128;
-static uint16_t s_wakeup_start_ct     = 455;
-static uint16_t s_wakeup_end_ct       = 200;
-static uint32_t s_wakeup_fade_time_ms = 15 * 60 * 1000UL;
-static uint8_t  s_wakeup_enabled      = 1; // use uint8_t for ZCL bool storage
+static uint8_t  s_wakeup_start_bri;
+static uint8_t  s_wakeup_end_bri;
+static uint16_t s_wakeup_start_ct;
+static uint16_t s_wakeup_end_ct;
+static uint32_t s_wakeup_fade_time_ms;
+static uint8_t  s_wakeup_enabled; // use uint8_t for ZCL bool storage
 
-
-static uint16_t rd_u16_le(const uint8_t *p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
-static uint32_t rd_u32_le(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
-
+static void wakeup_report_u8(uint16_t attr_id, uint8_t value);
 
 void SaveToNVS()
 {
@@ -68,7 +65,6 @@ void SaveToNVS()
         goto out;
     }
 
-    //int32_t brightness_save = (current_brightness >= 100) ? (int32_t)current_brightness : 100;
     int32_t brightness_save = current_brightness;
     err = nvs_set_i32(my_handle, "brightness", brightness_save);
     if (err != ESP_OK) {
@@ -118,6 +114,120 @@ void LoadFromNVS(){
     //return saved_color, saved_brightness;
 }
 
+void reportAttribute_delete(uint8_t endpoint, uint16_t clusterID, uint16_t attributeID, void *value, uint8_t value_length)
+{
+    esp_zb_zcl_report_attr_cmd_t cmd = {
+        .zcl_basic_cmd = {
+            .dst_addr_u.addr_short = 0x0001,
+            .dst_endpoint = endpoint,
+            .src_endpoint = endpoint,
+        },
+        .address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
+        .clusterID = clusterID,
+        .attributeID = attributeID,
+    };
+    esp_zb_zcl_attr_t *value_r = esp_zb_zcl_get_attribute(endpoint, clusterID, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, attributeID);
+    memcpy(value_r->data_p, value, value_length);
+    esp_zb_zcl_report_attr_cmd_req(&cmd);
+}
+
+void zigbee_wakeup_cancel_and_report(void)
+{
+    // Update wakeup config
+    wakeup_cfg_t cfg = wakeup_get();
+    cfg.enabled = false;
+    wakeup_set(&cfg);
+    wakeup_save_to_nvs();
+
+    // Stop wakeup (freeze at current phase)
+    if (wakeup_is_running()) {
+        wakeup_stop_cycle();
+    }
+
+    // Update ZCL backing storage
+    s_wakeup_enabled = 0;
+
+    // Report to coordinator so Zigbee2MQTT updates state
+    wakeup_report_u8(ATTR_WAKEUP_START, 0);
+
+    ESP_LOGI(TAG, "Local wakeup cancel -> reported wakeup_start=false");
+}
+
+static void wakeup_report_u8(uint16_t attr_id, uint8_t value)
+{
+    if (!esp_zb_bdb_dev_joined()) return;
+
+    esp_zb_lock_acquire(portMAX_DELAY);
+    ESP_LOGW(TAG, "wakeup_report_u8: reporting attr=0x%04x val=%u", attr_id, value);
+    // Set value inside stack (so reads return correct value too)
+    esp_zb_zcl_set_attribute_val(
+        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT,
+        ZCL_WAKEUP_CLUSTER_ID,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        attr_id,
+        &value,
+        false);
+
+    // Report to coordinator
+    esp_zb_zcl_report_attr_cmd_t cmd = {0};
+    cmd.zcl_basic_cmd.dst_addr_u.addr_short = 0x0000;  // coordinator
+    cmd.zcl_basic_cmd.src_endpoint = HA_COLOR_DIMMABLE_LIGHT_ENDPOINT;
+    cmd.zcl_basic_cmd.dst_endpoint = 1;
+    cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+    cmd.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
+    cmd.clusterID = ZCL_WAKEUP_CLUSTER_ID;
+    cmd.attributeID = attr_id;
+    cmd.manuf_code = ZCL_WAKEUP_MANUFACTURER_CODE;     // CRITICAL
+
+    esp_zb_zcl_report_attr_cmd_req(&cmd);
+
+    esp_zb_lock_release();
+}
+
+static void zigbee_sync_wakeup_zcl_backing_from_cfg(void)
+{
+    wakeup_cfg_t cfg = wakeup_get();  // already clamped by wakeup_load/wakeup_set
+
+    s_wakeup_start_bri    = cfg.start_bri;
+    s_wakeup_end_bri      = cfg.end_bri;
+    s_wakeup_start_ct     = cfg.start_ct_mired;
+    s_wakeup_end_ct       = cfg.end_ct_mired;
+    s_wakeup_fade_time_ms = cfg.fade_time_ms;
+
+    // IMPORTANT: boot state should be false
+    s_wakeup_enabled = 0;
+}
+
+static void zigbee_report_wakeup_start_false(void)
+{
+    // Ensure backing var is correct even if something changed
+    s_wakeup_enabled = 0;
+    ESP_LOGI(TAG, "Reporting wakeup start = false to Z2M");
+    // Force a report so Z2M updates its state on boot/join
+    wakeup_report_u8(ATTR_WAKEUP_START, 0);
+}
+
+static void zigbee_configure_wakeup_reporting(void)
+{
+    esp_zb_zcl_reporting_info_t wakeup_report = {
+        .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI,
+        .ep = HA_COLOR_DIMMABLE_LIGHT_ENDPOINT,
+        .cluster_id = ZCL_WAKEUP_CLUSTER_ID,
+        .cluster_role = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        .dst.profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .u.send_info.min_interval = 0,
+        .u.send_info.max_interval = 60,   // report at least every 60s (optional)
+        .u.send_info.def_min_interval = 0,
+        .u.send_info.def_max_interval = 60,
+        .u.send_info.delta.u8 = 0,        // report any change
+        .attr_id = ATTR_WAKEUP_START,
+        .manuf_code = ZCL_WAKEUP_MANUFACTURER_CODE,
+    };
+
+    esp_zb_zcl_update_reporting_info(&wakeup_report);
+    ESP_LOGI(TAG, "Wakeup reporting configured");
+}
+
 static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t *message)
 {
     esp_err_t ret = ESP_OK;
@@ -135,7 +245,9 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                 light_state = message->attribute.data.value ? *(bool *)message->attribute.data.value : light_state;
                 ESP_LOGI(TAG, "Light sets to %s", light_state ? "On" : "Off");
                 light_set_on(light_state, false);
-                //light_driver_set_power(light_state);
+                if (wakeup_is_running()) {
+                        wakeup_stop_cycle();
+                    }
             } else {
                 ESP_LOGW(TAG, "On/Off cluster data: attribute(0x%x), type(0x%x)", message->attribute.id, message->attribute.data.type);
             }
@@ -145,23 +257,29 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMPERATURE_ID && message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_U16)
                 {
                     uint16_t new_mired = *(uint16_t *)message->attribute.data.value;
+                    if (wakeup_is_running()) {
+                        wakeup_stop_cycle();
+                    }
                     //led_color_temperature_control(current_brightness, new_mired);
                     ESP_LOGI(TAG, "Color sets to %i", (int)new_mired);
                     if (new_mired != mired) {
                         mired = new_mired;
                         tlc_set_ct_mired_smooth(mired, 400);
-                        SaveToNVS(mired, current_brightness);
+                        SaveToNVS();
                     }
                     
                 }
             break;
-            
+
         case ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL:
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID && message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_U8) {
                 light_level = message->attribute.data.value ? *(uint8_t *)message->attribute.data.value : light_level;
                 ESP_LOGI(TAG, "Light level changes to %d", light_level);
                 //current_brightness = light_level;
                 //led_apply_brightness_and_ct(current_brightness, mired);
+                if (wakeup_is_running()) {
+                    wakeup_stop_cycle();
+                }
                 if (light_level > 0) {
                     current_brightness = light_level;
                     light_remember_brightness(light_level);
@@ -169,7 +287,7 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                 //current_brightness = light_level;
                 tlc_set_logical_brightness_smooth((uint8_t)current_brightness, (uint16_t)mired);
                 
-                SaveToNVS(mired, current_brightness);
+                SaveToNVS();
             } else {
                 ESP_LOGW(TAG, "Level Control cluster data: attribute(0x%x), type(0x%x)", message->attribute.id, message->attribute.data.type);
             }
@@ -177,7 +295,7 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
         
         case ZCL_WAKEUP_CLUSTER_ID: {
             wakeup_cfg_t cfg = wakeup_get();
-            ESP_LOGW(TAG, "FC10 write attr=0x%04x type=0x%02x", message->attribute.id, message->attribute.data.type);
+            ESP_LOGW(TAG, "Write attr=0x%04x type=0x%02x", message->attribute.id, message->attribute.data.type);
 
             switch (message->attribute.id) {
                 case ATTR_WAKEUP_START_BRI:
@@ -218,20 +336,24 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                     break;
                 case ATTR_WAKEUP_START:
                     if (message->attribute.data.value && message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_BOOL) {
-                        cfg.enabled = *(bool*)message->attribute.data.value;
+                        bool en = *(bool*)message->attribute.data.value;
+                        cfg.enabled = en;
                         s_wakeup_enabled = cfg.enabled ? 1 : 0;
                         ESP_LOGI(TAG, "Wakeup enabled set to %s", cfg.enabled ? "true" : "false");
+                        if (cfg.enabled) {
+                            zigbee_set_onoff_and_report(true);      // ZCL OnOff attribute + report
+                        }
                     }
                     break;
-                //case CMD_WAKEUP_START:
-                //   ESP_LOGI(TAG, "Wakeup command: START");
-                //    break;
-
-                // ... rest: update cfg + s_wakeup_* each time ...
+    
             }
 
             wakeup_set(&cfg);
             wakeup_save_to_nvs();
+            if (message->attribute.id == ATTR_WAKEUP_START) {
+                if (cfg.enabled) wakeup_start_cycle();
+                else wakeup_stop_cycle();
+            }
 
             // Optional: report attributes so zigbee2mqtt updates instantly
             // wakeup_report_all();  (you can add helper later)
@@ -262,22 +384,7 @@ static esp_err_t zb_default_resp_handler(const esp_zb_zcl_cmd_default_resp_messa
     return ESP_OK;
 }
 
-void reportAttribute(uint8_t endpoint, uint16_t clusterID, uint16_t attributeID, void *value, uint8_t value_length)
-{
-    esp_zb_zcl_report_attr_cmd_t cmd = {
-        .zcl_basic_cmd = {
-            .dst_addr_u.addr_short = 0x0001,
-            .dst_endpoint = endpoint,
-            .src_endpoint = endpoint,
-        },
-        .address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
-        .clusterID = clusterID,
-        .attributeID = attributeID,
-    };
-    esp_zb_zcl_attr_t *value_r = esp_zb_zcl_get_attribute(endpoint, clusterID, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, attributeID);
-    memcpy(value_r->data_p, value, value_length);
-    esp_zb_zcl_report_attr_cmd_req(&cmd);
-}
+
 
 void zigbee_update_temp_rh(float temperature_c, float rh_percent)
 {
@@ -402,29 +509,6 @@ void zigbee_update_temperature(float temperature)
 }
 
 
-static esp_err_t zb_action_handler_testing(esp_zb_core_action_callback_id_t callback_id, const void *message) {
-    switch (callback_id) {
-        // This is often where Manufacturer-Specific writes land in older SDKs
-        case ESP_ZB_CORE_CMD_CUSTOM_CLUSTER_REQ_CB_ID: {
-            esp_zb_zcl_custom_cluster_command_message_t *cmd_msg = (esp_zb_zcl_custom_cluster_command_message_t *)message;
-            ESP_LOGW(TAG, "Custom Cluster Received: 0x%04x", cmd_msg->info.cluster);
-            break;
-        }
-
-        case ESP_ZB_CORE_SET_ATTR_VALUE_CB_ID: {
-            esp_zb_zcl_set_attr_value_message_t *set_attr_msg = (esp_zb_zcl_set_attr_value_message_t *)message;
-            ESP_LOGI(TAG, "Standard Attr Set: Cluster 0x%04x, Attr 0x%04x", 
-                     set_attr_msg->info.cluster, 
-                     set_attr_msg->attribute.id);
-            break;
-        }
-        
-        default:
-            ESP_LOGD(TAG, "Other Zigbee action: 0x%x", callback_id);
-            break;
-    }
-    return ESP_OK;
-}
 
 static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const void *message)
 {
@@ -457,6 +541,11 @@ void esp_zb_task(void *pvParameters)
 {
     esp_zb_cfg_t zb_nwk_cfg = ESP_ZB_ZED_CONFIG();
     esp_zb_init(&zb_nwk_cfg);
+
+    /* Load wakeup config from NVS and sync ZCL attribute backing variables */
+    wakeup_init();
+    //zigbee_init_wakeup_attrs_from_cfg();
+    zigbee_sync_wakeup_zcl_backing_from_cfg();
 
     // ---------------- Basic cluster ----------------
     esp_zb_basic_cluster_cfg_t basic_cluster_cfg = {
@@ -498,6 +587,12 @@ void esp_zb_task(void *pvParameters)
 
     ESP_ERROR_CHECK(esp_zb_cluster_add_attr(wakeup_cluster, ZCL_WAKEUP_CLUSTER_ID, ATTR_WAKEUP_START,
         ESP_ZB_ZCL_ATTR_TYPE_BOOL, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &s_wakeup_enabled));
+
+    //ESP_ERROR_CHECK(esp_zb_cluster_add_attr(wakeup_cluster, ZCL_WAKEUP_CLUSTER_ID, ATTR_WAKEUP_START,
+    //    ESP_ZB_ZCL_ATTR_TYPE_BOOL, ESP_ZB_ZCL_ATTR_ACCESS_REPORTING, &s_wakeup_enabled));
+
+    // old: ESP_ERROR_CHECK(esp_zb_cluster_add_attr(wakeup_cluster, ZCL_WAKEUP_CLUSTER_ID, ATTR_WAKEUP_START,
+    //    ESP_ZB_ZCL_ATTR_TYPE_BOOL, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &s_wakeup_enabled));
 
     // ---------------- Identify cluster ----------------
     esp_zb_identify_cluster_cfg_t identify_cluster_cfg = {
@@ -622,7 +717,7 @@ void esp_zb_task(void *pvParameters)
     
     esp_zb_core_action_handler_register(zb_action_handler);
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
-    
+    /*
     esp_zb_zcl_attr_t *t1 = esp_zb_zcl_get_attribute(
         HA_COLOR_DIMMABLE_LIGHT_ENDPOINT,
         ZCL_WAKEUP_CLUSTER_ID,
@@ -646,161 +741,12 @@ void esp_zb_task(void *pvParameters)
         ATTR_WAKEUP_END_CT  // 0x0004
     );
     ESP_LOGW(TAG, "Lookup FC10/0004 => %p data_p=%p", t4, t4 ? t4->data_p : NULL);
+    */
 
     esp_zb_set_node_descriptor_manufacturer_code(0x1234);
 
-    ESP_ERROR_CHECK(esp_zb_start(false));
-    esp_zb_stack_main_loop();
-}
+    zigbee_configure_wakeup_reporting();
 
-
-void esp_zb_task_old(void *pvParameters)
-{
-    esp_zb_cfg_t zb_nwk_cfg = ESP_ZB_ZED_CONFIG();
-    esp_zb_init(&zb_nwk_cfg);
-
-    // Set up basic cluster configuration
-    esp_zb_basic_cluster_cfg_t basic_cluster_cfg = {
-        .zcl_version = ESP_ZB_ZCL_BASIC_ZCL_VERSION_DEFAULT_VALUE,
-        .power_source = 0x03,
-    };
-    
-
-    uint32_t ApplicationVersion = 0x0001;
-    uint32_t StackVersion = 0x0002;
-    uint32_t HWVersion = 0x0002;
-    uint8_t ManufacturerName[] = {7, 'C', 'K', '-', 'H', 'o', 'm', 'e'}; // warning: this is in format {length, 'string'} :
-    uint8_t ModelIdentifier[] = {14, 'C', 'C', 'T', '-', 'S', 'm', 'a', 'r', 't', 'L', 'a', 'm', 'p'};
-    uint8_t DateCode[] = {8, '2', '0', '2', '5', '1', '2', '2', '6'};
-    esp_zb_attribute_list_t *esp_zb_basic_cluster = esp_zb_basic_cluster_create(&basic_cluster_cfg);
-    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_APPLICATION_VERSION_ID, &ApplicationVersion);
-    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_STACK_VERSION_ID, &StackVersion);
-    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_HW_VERSION_ID, &HWVersion);
-    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, ManufacturerName);
-    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, ModelIdentifier);
-    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_DATE_CODE_ID, DateCode);
-
-    // Set up identify cluster configuration
-    esp_zb_identify_cluster_cfg_t identify_cluster_cfg = {
-        .identify_time = 0,
-    };
-    esp_zb_attribute_list_t *esp_zb_identify_cluster = esp_zb_identify_cluster_create(&identify_cluster_cfg);
-
-    
-    // Set up on/off cluster configuration
-    esp_zb_on_off_cluster_cfg_t on_off_cfg = {
-        .on_off = 0,
-    };
-    esp_zb_attribute_list_t *esp_zb_on_off_cluster = esp_zb_on_off_cluster_create(&on_off_cfg);
-
-
-    // Set up color control cluster configuration
-    esp_zb_color_cluster_cfg_t esp_zb_color_cluster_cfg = { 
-        .current_x = ESP_ZB_ZCL_COLOR_CONTROL_CURRENT_X_DEF_VALUE,                          /*!<  The current value of the normalized chromaticity value x */
-        .current_y = ESP_ZB_ZCL_COLOR_CONTROL_CURRENT_Y_DEF_VALUE,                          /*!<  The current value of the normalized chromaticity value y */ 
-        .color_mode = 0x0002,                                                               /*!<  The mode which attribute determines the color of the device */ 
-        .options = ESP_ZB_ZCL_COLOR_CONTROL_OPTIONS_DEFAULT_VALUE,                          /*!<  The bitmap determines behavior of some cluster commands */ 
-        .enhanced_color_mode = ESP_ZB_ZCL_COLOR_CONTROL_ENHANCED_COLOR_MODE_DEFAULT_VALUE,  /*!<  The enhanced-mode which attribute determines the color of the device */ 
-        .color_capabilities = 0x0010,                                                       /*!<  Specifying the color capabilities of the device support the color control cluster */ 
-    };
-    esp_zb_attribute_list_t *esp_zb_color_cluster = esp_zb_color_control_cluster_create(&esp_zb_color_cluster_cfg);
-    // Add color control attributes
-    uint16_t color_attr = MID_TEMP;
-    uint16_t min_temp = MIN_TEMP;
-    uint16_t max_temp = MAX_TEMP;
-    esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMPERATURE_ID, &color_attr);
-    esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMP_PHYSICAL_MIN_MIREDS_ID, &min_temp);
-    esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMP_PHYSICAL_MAX_MIREDS_ID, &max_temp);
-    
-    // Set up level control cluster configuration
-    esp_zb_attribute_list_t *esp_zb_level_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL);
-    uint8_t level = 50;
-    esp_zb_level_cluster_add_attr(esp_zb_level_cluster, ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID, &level);
-
-    // Set up temperature measurement cluster configuration
-    esp_zb_temperature_meas_cluster_cfg_t temperature_meas_cfg = {
-        .measured_value = 0x8000,
-        .min_value = -4000,
-        .max_value = 12500,
-    };
-    esp_zb_attribute_list_t *esp_zb_temperature_meas_cluster = esp_zb_temperature_meas_cluster_create(&temperature_meas_cfg);
-
-    // Set up humidity measurement cluster configuration
-    esp_zb_humidity_meas_cluster_cfg_t humidity_meas_cfg = {
-        .measured_value = 0xFFFF,   // "invalid/unknown" start value is typical for MeasuredValue
-        .min_value      = 0,
-        .max_value      = 10000,    // 100.00% (units are 0.01%)
-    };
-    esp_zb_attribute_list_t *esp_zb_humidity_meas_cluster = esp_zb_humidity_meas_cluster_create(&humidity_meas_cfg);
-
-    
-    // Create cluster list and add clusters
-    esp_zb_cluster_list_t *esp_zb_cluster_list = esp_zb_zcl_cluster_list_create();
-    esp_zb_cluster_list_add_basic_cluster(esp_zb_cluster_list, esp_zb_basic_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    esp_zb_cluster_list_add_identify_cluster(esp_zb_cluster_list, esp_zb_identify_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    esp_zb_cluster_list_add_on_off_cluster(esp_zb_cluster_list, esp_zb_on_off_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    esp_zb_cluster_list_add_temperature_meas_cluster(esp_zb_cluster_list, esp_zb_temperature_meas_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    esp_zb_cluster_list_add_humidity_meas_cluster(esp_zb_cluster_list, esp_zb_humidity_meas_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    
-    esp_zb_cluster_list_add_level_cluster(esp_zb_cluster_list, esp_zb_level_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-
-    esp_zb_cluster_list_add_color_control_cluster(esp_zb_cluster_list, esp_zb_color_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    esp_zb_cluster_list_update_color_control_cluster(esp_zb_cluster_list, esp_zb_color_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-
-    // Create endpoint list
-    esp_zb_ep_list_t *esp_zb_ep_list = esp_zb_ep_list_create();
-
-    // Create endpoint configuration
-    esp_zb_endpoint_config_t zb_endpoint_config = {
-        .endpoint =  HA_COLOR_DIMMABLE_LIGHT_ENDPOINT,                       /*!< Endpoint */
-        .app_profile_id =  ESP_ZB_AF_HA_PROFILE_ID,               /*!< Application profile identifier */
-        .app_device_id =  ESP_ZB_HA_ON_OFF_LIGHT_DEVICE_ID,       /*!< Application device identifier */
-        .app_device_version = 4,                                  /*!< Application device version */
-    };
-    // Add endpoint to endpoint list
-    esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_cluster_list, zb_endpoint_config);
-    // Register device endpoint list
-    esp_zb_device_register(esp_zb_ep_list);
-
-    // Configure temperature reporting
-    esp_zb_zcl_reporting_info_t temperature_report = {
-        .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI,
-        .ep = HA_COLOR_DIMMABLE_LIGHT_ENDPOINT,
-        .cluster_id = ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT,
-        .cluster_role = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        .dst.profile_id = ESP_ZB_AF_HA_PROFILE_ID,
-        .u.send_info.min_interval = 2,
-        .u.send_info.max_interval = 10,
-        .u.send_info.def_min_interval = 2,
-        .u.send_info.def_max_interval = 10,
-        .u.send_info.delta.u16 = 0, 
-        .attr_id = ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_VALUE_ID,
-        .manuf_code = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC,
-    };
-
-    esp_zb_zcl_update_reporting_info(&temperature_report);
-
-    // Configure humidity reporting
-    esp_zb_zcl_reporting_info_t humidity_report = {
-        .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI,
-        .ep = HA_COLOR_DIMMABLE_LIGHT_ENDPOINT,
-        .cluster_id = ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT, // cluster 0x0405 :contentReference[oaicite:4]{index=4}
-        .cluster_role = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        .dst.profile_id = ESP_ZB_AF_HA_PROFILE_ID,
-        .u.send_info.min_interval = 2,
-        .u.send_info.max_interval = 10,
-        .u.send_info.def_min_interval = 2,
-        .u.send_info.def_max_interval = 10,
-        .u.send_info.delta.u16 = 0, // report on any change (or set e.g. 50 == 0.50%)
-        .attr_id = ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
-        .manuf_code = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC,
-    };
-
-    esp_zb_zcl_update_reporting_info(&humidity_report);
-
-
-    esp_zb_core_action_handler_register(zb_action_handler);
-    esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
     ESP_ERROR_CHECK(esp_zb_start(false));
     esp_zb_stack_main_loop();
 }
@@ -837,13 +783,13 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
                 ESP_LOGI(TAG, "Device rebooted");
                 ESP_LOGI(TAG, "Applying saved LED state after reboot");
                 ESP_LOGI(TAG, "Vals: %i brightness and %i mired", (int)current_brightness, (int)mired);
-                /*
+               
                 zigbee_connection_confirmed_sequence(current_brightness);
                 tlc_set_ct_mired_smooth((uint16_t)mired, 400);
                 tlc_set_logical_brightness_smooth((uint8_t)current_brightness, (uint16_t)mired);
                 status_led_set_state(STATUS_LED_STATE_NORMAL_OPERATION);
                 light_set_on(true, true);
-                */
+
                 
                 
             }
@@ -855,16 +801,16 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
         }
         break;
     case ESP_ZB_BDB_SIGNAL_STEERING:
-        //status_led_set_state(STATUS_LED_STATE_JOINING_NETWORK);
+        status_led_set_state(STATUS_LED_STATE_JOINING_NETWORK);
         if (err_status == ESP_OK) {
-            //status_led_set_state(STATUS_LED_STATE_JOINED_SUCCESSFULLY);
+            status_led_set_state(STATUS_LED_STATE_JOINED_SUCCESSFULLY);
             esp_zb_ieee_addr_t extended_pan_id;
             esp_zb_get_extended_pan_id(extended_pan_id);
             ESP_LOGI(TAG, "Joined network successfully (Extended PAN ID: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x, PAN ID: 0x%04hx, Channel:%d, Short Address: 0x%04hx)",
                      extended_pan_id[7], extended_pan_id[6], extended_pan_id[5], extended_pan_id[4],
                      extended_pan_id[3], extended_pan_id[2], extended_pan_id[1], extended_pan_id[0],
                      esp_zb_get_pan_id(), esp_zb_get_current_channel(), esp_zb_get_short_address());
-            /*
+            
             ESP_LOGI(TAG, "Applying saved LED state after join");
             ESP_LOGI(TAG, "Vals: %i brightness and %i mired", (int)current_brightness, (int)mired);
             zigbee_connection_confirmed_sequence(current_brightness);
@@ -872,7 +818,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             tlc_set_logical_brightness_smooth((uint8_t)current_brightness, (uint16_t)mired);
             status_led_set_state(STATUS_LED_STATE_NORMAL_OPERATION);
             light_set_on(true, true);
-            */
+  
             
                 
         } else {
