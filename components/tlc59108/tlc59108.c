@@ -336,7 +336,7 @@ void led_apply_brightness_and_ct(uint16_t brightness, uint16_t mired)
     s_out_amber = amber_pwm;
     s_out_white = white_pwm;
 
-    ESP_LOGD(TAG,
+    ESP_LOGI(TAG,
              "Apply: bri=%u mired=%u mix=%d -> amber=%u white=%u sum=%u",
              (unsigned)brightness, (unsigned)mired, mix,
              (unsigned)amber_pwm, (unsigned)white_pwm,
@@ -421,24 +421,6 @@ void tlc_set_logical_brightness_smooth(uint8_t target, uint16_t mired_now)
     tlc_set_logical_brightness_smooth_ms(target, mired_now, 200); // keep old “feel”
 }
 
-void tlc_set_logical_brightness_smooth_old(uint8_t target, uint16_t mired_now)
-{
-    // If we are currently at 0 output (or not running), start cur from real output
-    uint8_t cur_hw = get_current_logical_brightness_from_outputs();
-
-    // If fade isn't running, sync cur to actual output so ramp always starts correctly
-    if (!s_fade.running) {
-        s_fade.cur = cur_hw;
-    }
-
-    s_fade.target = target;
-    s_fade.mired  = mired_now;
-    s_fade.running = true;
-
-    ESP_LOGI(TAG, "tlc_set_logical_brightness: cur=%u target=%u mired=%u",
-             (unsigned)s_fade.cur, (unsigned)s_fade.target, (unsigned)s_fade.mired);
-}
-
 void tlc_set_logical_brightness_smooth_ms(uint8_t target, uint16_t mired_now, uint32_t transition_ms)
 {
     uint8_t cur_hw = get_current_logical_brightness_from_outputs();
@@ -487,6 +469,10 @@ void tlc_set_ct_mired(uint16_t new_mired)
     s_ct.cur = new_mired;
     s_ct.target = new_mired;
     s_ct.running = false;
+
+    uint8_t cur_hw = get_current_logical_brightness_from_outputs();
+    s_fade.cur = cur_hw;
+    
 
     // Apply instantly at current brightness
     led_apply_brightness_and_ct(s_fade.cur, s_ct.cur);

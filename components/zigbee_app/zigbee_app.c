@@ -355,8 +355,6 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                 else wakeup_stop_cycle();
             }
 
-            // Optional: report attributes so zigbee2mqtt updates instantly
-            // wakeup_report_all();  (you can add helper later)
 
             break;
         }
@@ -929,6 +927,7 @@ void zigbee_set_level_and_report(uint8_t level)
     esp_zb_zcl_report_attr_cmd_req(&cmd);
 
     esp_zb_lock_release();
+    ESP_LOGI(TAG, "Reported new level %d to coordinator", level);
 }
 
 void zigbee_set_ct_and_report(uint16_t mired_value)
@@ -964,6 +963,7 @@ void zigbee_set_ct_and_report(uint16_t mired_value)
     esp_zb_zcl_report_attr_cmd_req(&cmd);
 
     esp_zb_lock_release();
+    ESP_LOGI(TAG, "Reported new color temperature %d mired to coordinator", mired_value);
 }
 
 

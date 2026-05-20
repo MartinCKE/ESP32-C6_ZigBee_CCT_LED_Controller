@@ -156,6 +156,7 @@ static void act_apply_brightness(uint8_t level, void *ctx)
     if (level == 0) level = 1; // avoid zero brightness 
     current_brightness = level;
     ESP_LOGI("MAIN", "Brightness apply: level=%u", (unsigned)level);
+    ESP_LOGI("MAIN", "Current mired: %u", (unsigned)mired);
     led_apply_brightness_and_ct(current_brightness, mired);
 }
 
@@ -165,6 +166,9 @@ static void act_commit_brightness(uint8_t level, void *ctx)
     current_brightness = level;
     SaveToNVS();
     zigbee_set_level_and_report(level);
+
+    //debug stuff
+    zigbee_set_ct_and_report(mired);
 }
 
 static void act_apply_ct(uint16_t mired_new, void *ctx)
@@ -172,7 +176,8 @@ static void act_apply_ct(uint16_t mired_new, void *ctx)
     (void)ctx;
     mired = mired_new;
     ESP_LOGI("MAIN", "CT apply: mired_new=%u", (unsigned)mired_new);
-    tlc_set_ct_mired((uint16_t)mired); // 400ms feels nice
+    ESP_LOGI("MAIN", "Current brightness: %u", (unsigned)current_brightness);
+    tlc_set_ct_mired((uint16_t)mired); 
 }
 
 static void act_commit_ct(uint16_t mired_new, void *ctx)
@@ -180,9 +185,13 @@ static void act_commit_ct(uint16_t mired_new, void *ctx)
     (void)ctx;
     mired = mired_new;
     ESP_LOGI("MAIN", "CT commit: mired_new=%u", (unsigned)mired_new);
-    tlc_set_ct_mired((uint16_t)mired); // 400ms feels nice
+    tlc_set_ct_mired((uint16_t)mired); 
     SaveToNVS();
     zigbee_set_ct_and_report(mired_new);
+
+    // debug stuff
+    zigbee_set_level_and_report(current_brightness);
+    
 }
 
 
@@ -270,6 +279,8 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
 
     LoadFromNVS(); // Loading last known brightness / color temperature
+    tlc_set_logical_brightness_smooth((uint8_t)current_brightness, (uint16_t)mired);
+    light_set_on(true, true);
 
     ESP_LOGI("MAIN", "Starting ESP Zigbee Config");
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
