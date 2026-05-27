@@ -1,8 +1,13 @@
 #include "zigbee_app.h"
 #include "esp_log.h"
 #include "esp_check.h"
+#include "esp_ota_ops.h"
+#include "esp_system.h"
 #include "esp_zigbee_core.h"
+#include "esp_zigbee_attribute.h"
+#include "esp_zigbee_cluster.h"
 #include "ha/esp_zigbee_ha_standard.h"
+#include "zcl/esp_zigbee_zcl_ota.h"
 #include <string.h>
 #include "tlc59108.h"
 #include "freertos/FreeRTOS.h"
@@ -38,6 +43,10 @@ int32_t current_brightness = 128;
 
 #define CMD_WAKEUP_SET_CONFIG  0x10
 
+typedef enum {
+    OTA_ELEMENT_TAG_UPGRADE_IMAGE = 0x0000,
+} ota_element_tag_id_t;
+
 // ---- Wakeup cluster backing variables (ZCL attribute storage) ----
 static uint8_t  s_wakeup_start_bri;
 static uint8_t  s_wakeup_end_bri;
@@ -45,6 +54,22 @@ static uint16_t s_wakeup_start_ct;
 static uint16_t s_wakeup_end_ct;
 static uint32_t s_wakeup_fade_time_ms;
 static uint8_t  s_wakeup_enabled; // use uint8_t for ZCL bool storage
+
+static const esp_partition_t *s_ota_partition = NULL;
+static esp_ota_handle_t s_ota_handle = 0;
+static bool s_ota_in_progress = false;
+static bool s_ota_tagid_received = false;
+static bool s_ota_validated = false;
+static bool s_ota_boot_partition_set = false;
+static uint32_t s_ota_received_size = 0;
+static uint32_t s_ota_written_size = 0;
+static uint32_t s_ota_total_size = 0;
+static uint32_t s_ota_file_version = 0;
+static bool s_ota_image_approved = false;
+static uint16_t s_ota_approved_manufacturer = 0;
+static uint16_t s_ota_approved_image_type = 0;
+static uint32_t s_ota_approved_file_version = 0;
+static uint32_t s_ota_approved_image_size = 0;
 
 static void wakeup_report_u8(uint16_t attr_id, uint8_t value);
 
@@ -382,6 +407,298 @@ static esp_err_t zb_default_resp_handler(const esp_zb_zcl_cmd_default_resp_messa
     return ESP_OK;
 }
 
+static void zigbee_ota_reset_state(void)
+{
+    s_ota_partition = NULL;
+    s_ota_handle = 0;
+    s_ota_in_progress = false;
+    s_ota_tagid_received = false;
+    s_ota_validated = false;
+    s_ota_boot_partition_set = false;
+    s_ota_received_size = 0;
+    s_ota_written_size = 0;
+    s_ota_total_size = 0;
+    s_ota_file_version = 0;
+    s_ota_image_approved = false;
+    s_ota_approved_manufacturer = 0;
+    s_ota_approved_image_type = 0;
+    s_ota_approved_file_version = 0;
+    s_ota_approved_image_size = 0;
+}
+
+static void zigbee_ota_abort_update(void)
+{
+    if (s_ota_handle) {
+        esp_err_t ret = esp_ota_abort(s_ota_handle);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "OTA abort failed: %s", esp_err_to_name(ret));
+        }
+    }
+    zigbee_ota_reset_state();
+}
+
+static esp_err_t zigbee_ota_check_header(const esp_zb_ota_file_header_t *header)
+{
+    if (!header) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (header->manufacturer_code != OTA_UPGRADE_MANUFACTURER ||
+        header->image_type != OTA_UPGRADE_IMAGE_TYPE) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (header->file_version <= OTA_UPGRADE_RUNNING_FILE_VERSION) {
+        return ESP_ERR_INVALID_VERSION;
+    }
+
+    if (header->image_size <= OTA_ELEMENT_HEADER_LEN) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    return ESP_OK;
+}
+
+static void zigbee_ota_log_header_reject(const esp_zb_ota_file_header_t *header, esp_err_t reason)
+{
+    if (!header) {
+        ESP_LOGE(TAG, "Rejecting OTA image: header missing");
+        return;
+    }
+
+    ESP_LOGE(TAG,
+             "Rejecting OTA image: %s, version=0x%08lx manufacturer=0x%04x image_type=0x%04x size=%lu",
+             esp_err_to_name(reason),
+             header->file_version,
+             header->manufacturer_code,
+             header->image_type,
+             header->image_size);
+}
+
+static esp_err_t zigbee_ota_extract_image_data(uint32_t *total_size, const uint8_t *payload,
+                                               uint16_t payload_size, const void **outbuf,
+                                               uint16_t *outlen)
+{
+    static uint16_t tagid = 0;
+    const uint8_t *data_buf = NULL;
+    uint16_t data_len = 0;
+
+    ESP_RETURN_ON_FALSE(total_size && payload && outbuf && outlen, ESP_ERR_INVALID_ARG, TAG, "Invalid OTA payload args");
+
+    if (!s_ota_tagid_received) {
+        uint32_t element_len = 0;
+        uint32_t element_total_size = 0;
+        ESP_RETURN_ON_FALSE(payload_size > OTA_ELEMENT_HEADER_LEN,
+                            ESP_ERR_INVALID_ARG, TAG, "Invalid OTA element header");
+
+        memcpy(&tagid, payload, sizeof(tagid));
+        memcpy(&element_len, payload + sizeof(tagid), sizeof(element_len));
+        element_total_size = element_len + OTA_ELEMENT_HEADER_LEN;
+
+        if (*total_size == 0) {
+            *total_size = element_total_size;
+        }
+
+        ESP_RETURN_ON_FALSE(element_total_size == *total_size,
+                            ESP_ERR_INVALID_SIZE, TAG,
+                            "Invalid OTA element length [%lu/%lu]",
+                            element_len, *total_size);
+
+        s_ota_tagid_received = true;
+        data_buf = payload + OTA_ELEMENT_HEADER_LEN;
+        data_len = payload_size - OTA_ELEMENT_HEADER_LEN;
+    } else {
+        data_buf = payload;
+        data_len = payload_size;
+    }
+
+    ESP_RETURN_ON_FALSE(tagid == OTA_ELEMENT_TAG_UPGRADE_IMAGE,
+                        ESP_ERR_INVALID_ARG, TAG,
+                        "Unsupported OTA element tag 0x%04x", tagid);
+
+    *outbuf = data_buf;
+    *outlen = data_len;
+    return ESP_OK;
+}
+
+static esp_err_t zb_ota_upgrade_status_handler(const esp_zb_zcl_ota_upgrade_value_message_t *message)
+{
+    ESP_RETURN_ON_FALSE(message, ESP_ERR_INVALID_ARG, TAG, "Empty OTA message");
+    ESP_RETURN_ON_FALSE(message->info.status == ESP_ZB_ZCL_STATUS_SUCCESS,
+                        ESP_ERR_INVALID_ARG, TAG,
+                        "OTA message status error: %d", message->info.status);
+
+    esp_err_t ret = ESP_OK;
+
+    switch (message->upgrade_status) {
+        case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_START: {
+            ESP_LOGI(TAG, "OTA start: version=0x%08lx manufacturer=0x%04x image_type=0x%04x size=%lu",
+                     message->ota_header.file_version,
+                     message->ota_header.manufacturer_code,
+                     message->ota_header.image_type,
+                     message->ota_header.image_size);
+
+            if (s_ota_in_progress || s_ota_handle) {
+                ESP_LOGW(TAG, "OTA already in progress; aborting previous transfer");
+                zigbee_ota_abort_update();
+            }
+
+            ret = zigbee_ota_check_header(&message->ota_header);
+            bool header_valid = (ret == ESP_OK);
+            if (!header_valid) {
+                if (!s_ota_image_approved) {
+                    zigbee_ota_log_header_reject(&message->ota_header, ret);
+                    return ret;
+                }
+
+                ESP_LOGI(TAG,
+                         "OTA start header omitted metadata, continuing with approved query response "
+                         "metadata: version=0x%08lx manufacturer=0x%04x image_type=0x%04x size=%lu",
+                         s_ota_approved_file_version,
+                         s_ota_approved_manufacturer,
+                         s_ota_approved_image_type,
+                         s_ota_approved_image_size);
+                ret = ESP_OK;
+            }
+
+            s_ota_partition = esp_ota_get_next_update_partition(NULL);
+            ESP_RETURN_ON_FALSE(s_ota_partition, ESP_ERR_NOT_FOUND, TAG, "No OTA partition available");
+            uint32_t announced_image_size = header_valid ? message->ota_header.image_size : s_ota_approved_image_size;
+            ESP_RETURN_ON_FALSE(announced_image_size <= (s_ota_partition->size + OTA_ELEMENT_HEADER_LEN + 64),
+                                ESP_ERR_INVALID_SIZE, TAG,
+                                "OTA image too large: %lu > partition %lu",
+                                announced_image_size,
+                                s_ota_partition->size);
+
+            ret = esp_ota_begin(s_ota_partition, OTA_WITH_SEQUENTIAL_WRITES, &s_ota_handle);
+            ESP_RETURN_ON_ERROR(ret, TAG, "esp_ota_begin failed: %s", esp_err_to_name(ret));
+
+            s_ota_in_progress = true;
+            s_ota_tagid_received = false;
+            s_ota_validated = false;
+            s_ota_boot_partition_set = false;
+            s_ota_received_size = 0;
+            s_ota_written_size = 0;
+            s_ota_total_size = header_valid ? message->ota_header.image_size : 0;
+            s_ota_file_version = header_valid ? message->ota_header.file_version : s_ota_approved_file_version;
+            ESP_LOGI(TAG, "OTA writing to partition %s at 0x%08lx",
+                     s_ota_partition->label, s_ota_partition->address);
+            break;
+        }
+
+        case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_RECEIVE: {
+            ESP_RETURN_ON_FALSE(s_ota_in_progress && s_ota_handle,
+                                ESP_ERR_INVALID_STATE, TAG, "OTA receive without active transfer");
+
+            s_ota_received_size += message->payload_size;
+            if (message->payload_size && message->payload) {
+                const void *payload = NULL;
+                uint16_t payload_size = 0;
+                ret = zigbee_ota_extract_image_data(&s_ota_total_size, message->payload,
+                                                    message->payload_size, &payload, &payload_size);
+                ESP_RETURN_ON_ERROR(ret, TAG, "Failed to parse OTA element: %s", esp_err_to_name(ret));
+
+                ret = esp_ota_write(s_ota_handle, payload, payload_size);
+                ESP_RETURN_ON_ERROR(ret, TAG, "esp_ota_write failed: %s", esp_err_to_name(ret));
+                s_ota_written_size += payload_size;
+            }
+
+            ESP_LOGI(TAG, "OTA receive progress: transport=%lu/%lu app=%lu",
+                     s_ota_received_size, s_ota_total_size, s_ota_written_size);
+            break;
+        }
+
+        case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_CHECK:
+            ESP_RETURN_ON_FALSE(s_ota_in_progress && s_ota_handle,
+                                ESP_ERR_INVALID_STATE, TAG, "OTA check without active transfer");
+            ESP_RETURN_ON_FALSE(s_ota_received_size == s_ota_total_size,
+                                ESP_ERR_INVALID_SIZE, TAG,
+                                "OTA transfer incomplete: %lu/%lu",
+                                s_ota_received_size, s_ota_total_size);
+
+            ret = esp_ota_end(s_ota_handle);
+            s_ota_handle = 0;
+            ESP_RETURN_ON_ERROR(ret, TAG, "esp_ota_end failed: %s", esp_err_to_name(ret));
+
+            s_ota_in_progress = false;
+            s_ota_validated = true;
+            s_ota_tagid_received = false;
+            ESP_LOGI(TAG, "OTA image validated: version=0x%08lx app_bytes=%lu",
+                     s_ota_file_version, s_ota_written_size);
+            break;
+
+        case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_APPLY:
+            ESP_RETURN_ON_FALSE(s_ota_validated && s_ota_partition,
+                                ESP_ERR_INVALID_STATE, TAG, "OTA apply before validation");
+            ret = esp_ota_set_boot_partition(s_ota_partition);
+            ESP_RETURN_ON_ERROR(ret, TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(ret));
+            s_ota_boot_partition_set = true;
+            ESP_LOGI(TAG, "OTA boot partition set to %s", s_ota_partition->label);
+            break;
+
+        case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_FINISH:
+            ESP_LOGI(TAG, "OTA finish: version=0x%08lx manufacturer=0x%04x image_type=0x%04x",
+                     s_ota_file_version,
+                     s_ota_approved_manufacturer,
+                     s_ota_approved_image_type);
+            if (!s_ota_boot_partition_set && s_ota_validated && s_ota_partition) {
+                ret = esp_ota_set_boot_partition(s_ota_partition);
+                ESP_RETURN_ON_ERROR(ret, TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(ret));
+            }
+            ESP_LOGW(TAG, "Restarting into OTA image");
+            esp_restart();
+            break;
+
+        case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ABORT:
+        case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR:
+            ESP_LOGW(TAG, "OTA aborted/error status: %d", message->upgrade_status);
+            zigbee_ota_abort_update();
+            break;
+
+        case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_SERVER_NOT_FOUND:
+            ESP_LOGW(TAG, "OTA server not found");
+            break;
+
+        default:
+            ESP_LOGI(TAG, "OTA status: %d", message->upgrade_status);
+            break;
+    }
+
+    return ret;
+}
+
+static esp_err_t zb_ota_upgrade_query_image_resp_handler(const esp_zb_zcl_ota_upgrade_query_image_resp_message_t *message)
+{
+    ESP_RETURN_ON_FALSE(message, ESP_ERR_INVALID_ARG, TAG, "Empty OTA query response");
+    ESP_RETURN_ON_FALSE(message->info.status == ESP_ZB_ZCL_STATUS_SUCCESS,
+                        ESP_ERR_INVALID_ARG, TAG,
+                        "OTA query response status error: %d", message->info.status);
+
+    ESP_LOGI(TAG, "OTA image response: server=0x%04hx ep=%u version=0x%08lx manufacturer=0x%04x image_type=0x%04x size=%lu",
+             message->server_addr.u.short_addr,
+             message->server_endpoint,
+             message->file_version,
+             message->manufacturer_code,
+             message->image_type,
+             message->image_size);
+
+    if (message->manufacturer_code != OTA_UPGRADE_MANUFACTURER ||
+        message->image_type != OTA_UPGRADE_IMAGE_TYPE ||
+        message->file_version <= OTA_UPGRADE_RUNNING_FILE_VERSION) {
+        ESP_LOGW(TAG, "Rejecting OTA query response");
+        return ESP_ERR_INVALID_VERSION;
+    }
+
+    s_ota_image_approved = true;
+    s_ota_approved_manufacturer = message->manufacturer_code;
+    s_ota_approved_image_type = message->image_type;
+    s_ota_approved_file_version = message->file_version;
+    s_ota_approved_image_size = message->image_size;
+
+    ESP_LOGI(TAG, "Approving OTA image upgrade");
+    return ESP_OK;
+}
+
 
 
 void zigbee_update_temp_rh(float temperature_c, float rh_percent)
@@ -520,6 +837,14 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
     case ESP_ZB_CORE_CMD_DEFAULT_RESP_CB_ID:
         ret = zb_default_resp_handler((const esp_zb_zcl_cmd_default_resp_message_t *)message);
         break;
+
+    case ESP_ZB_CORE_OTA_UPGRADE_VALUE_CB_ID:
+        ret = zb_ota_upgrade_status_handler((const esp_zb_zcl_ota_upgrade_value_message_t *)message);
+        break;
+
+    case ESP_ZB_CORE_OTA_UPGRADE_QUERY_IMAGE_RESP_CB_ID:
+        ret = zb_ota_upgrade_query_image_resp_handler((const esp_zb_zcl_ota_upgrade_query_image_resp_message_t *)message);
+        break;
     
     // might add later
     // case ESP_ZB_CORE_REPORT_ATTR_CB_ID:
@@ -551,12 +876,13 @@ void esp_zb_task(void *pvParameters)
         .power_source = 0x03,
     };
 
-    uint32_t ApplicationVersion = 0x0001;
-    uint32_t StackVersion       = 0x0002;
-    uint32_t HWVersion          = 0x0002;
+    uint8_t ApplicationVersion = (uint8_t)(OTA_UPGRADE_RUNNING_FILE_VERSION & 0xff);
+    uint8_t StackVersion       = 0x02;
+    uint8_t HWVersion          = 0x02;
     uint8_t ManufacturerName[]  = {7, 'C', 'K', '-', 'H', 'o', 'm', 'e'};
-    uint8_t ModelIdentifier[]   = {14, 'C', 'C', 'T', '-', 'S', 'm', 'a', 'r', 't', 'L', 'a', 'm', 'p'};
-    uint8_t DateCode[]          = {8, '2', '0', '2', '5', '1', '2', '2', '6'};
+    uint8_t ModelIdentifier[]   = {13, 'C', 'C', 'T', '-', 'S', 'm', 'a', 'r', 't', 'L', 'a', 'm', 'p'};
+    uint8_t DateCode[]          = {8, '2', '0', '2', '6', '0', '5', '2', '7'};
+    uint8_t SWBuildID[]         = {10, '0', 'x', '0', '0', '0', '1', '0', '0', '0', 'A'};
 
     esp_zb_attribute_list_t *esp_zb_basic_cluster = esp_zb_basic_cluster_create(&basic_cluster_cfg);
     esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_APPLICATION_VERSION_ID, &ApplicationVersion);
@@ -565,6 +891,7 @@ void esp_zb_task(void *pvParameters)
     esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, ManufacturerName);
     esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, ModelIdentifier);
     esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_DATE_CODE_ID, DateCode);
+    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_SW_BUILD_ID, SWBuildID);
 
     esp_zb_attribute_list_t *wakeup_cluster = esp_zb_zcl_attr_list_create(ZCL_WAKEUP_CLUSTER_ID);
     
@@ -643,6 +970,34 @@ void esp_zb_task(void *pvParameters)
     };
     esp_zb_attribute_list_t *esp_zb_humidity_meas_cluster = esp_zb_humidity_meas_cluster_create(&humidity_meas_cfg);
 
+    // ---------------- OTA Upgrade client cluster ----------------
+    esp_zb_ota_cluster_cfg_t ota_cluster_cfg = {
+        .ota_upgrade_file_version = OTA_UPGRADE_RUNNING_FILE_VERSION,
+        .ota_upgrade_downloaded_file_ver = OTA_UPGRADE_DOWNLOADED_FILE_VERSION,
+        .ota_upgrade_manufacturer = OTA_UPGRADE_MANUFACTURER,
+        .ota_upgrade_image_type = OTA_UPGRADE_IMAGE_TYPE,
+    };
+    esp_zb_attribute_list_t *esp_zb_ota_cluster = esp_zb_ota_cluster_create(&ota_cluster_cfg);
+    esp_zb_zcl_ota_upgrade_client_variable_t ota_variable_config = {
+        .timer_query = ESP_ZB_ZCL_OTA_UPGRADE_QUERY_TIMER_COUNT_DEF,
+        .hw_version = OTA_UPGRADE_HW_VERSION,
+        .max_data_size = OTA_UPGRADE_MAX_DATA_SIZE,
+    };
+    uint16_t ota_upgrade_server_addr = ESP_ZB_ZCL_OTA_UPGRADE_SERVER_ADDR_DEF_VALUE;
+    uint8_t ota_upgrade_server_ep = ESP_ZB_ZCL_OTA_UPGRADE_SERVER_ENDPOINT_DEF_VALUE;
+    ESP_ERROR_CHECK(esp_zb_ota_cluster_add_attr(
+        esp_zb_ota_cluster,
+        ESP_ZB_ZCL_ATTR_OTA_UPGRADE_CLIENT_DATA_ID,
+        (void *)&ota_variable_config));
+    ESP_ERROR_CHECK(esp_zb_ota_cluster_add_attr(
+        esp_zb_ota_cluster,
+        ESP_ZB_ZCL_ATTR_OTA_UPGRADE_SERVER_ADDR_ID,
+        (void *)&ota_upgrade_server_addr));
+    ESP_ERROR_CHECK(esp_zb_ota_cluster_add_attr(
+        esp_zb_ota_cluster,
+        ESP_ZB_ZCL_ATTR_OTA_UPGRADE_SERVER_ENDPOINT_ID,
+        (void *)&ota_upgrade_server_ep));
+
     // ---------------- Cluster list ----------------
     esp_zb_cluster_list_t *esp_zb_cluster_list = esp_zb_zcl_cluster_list_create();
 
@@ -659,6 +1014,8 @@ void esp_zb_task(void *pvParameters)
 
     esp_zb_cluster_list_add_color_control_cluster(esp_zb_cluster_list, esp_zb_color_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     esp_zb_cluster_list_update_color_control_cluster(esp_zb_cluster_list, esp_zb_color_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_ota_cluster(
+        esp_zb_cluster_list, esp_zb_ota_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE));
 
     // Add wakeup cluster to endpoint
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_custom_cluster(
@@ -965,8 +1322,3 @@ void zigbee_set_ct_and_report(uint16_t mired_value)
     esp_zb_lock_release();
     ESP_LOGI(TAG, "Reported new color temperature %d mired to coordinator", mired_value);
 }
-
-
-
-
-

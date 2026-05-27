@@ -33,6 +33,7 @@ void status_led_start(const status_led_config_t *cfg);
 /** Set current status state (thread-safe). */
 void status_led_set_state(status_led_state_t state);
 void status_led_boot_ok_start(void);
+void status_led_ota_success_start(void);
 
 /** Trigger button press indication: Green short blink (thread-safe, NOT ISR). */
 void status_led_notify_button_press(void);

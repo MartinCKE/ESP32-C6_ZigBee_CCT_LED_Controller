@@ -2,6 +2,7 @@
 #include "tlc59108.h"
 #include "tc74.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "zigbee_app.h"
 #include "esp_zigbee_core.h"
 #include "esp_check.h"
@@ -277,6 +278,13 @@ void app_main(void)
     };
     ESP_LOGI("MAIN", "Starting NVS flash init");
     ESP_ERROR_CHECK(nvs_flash_init());
+    esp_err_t ota_mark_ret = esp_ota_mark_app_valid_cancel_rollback();
+    if (ota_mark_ret == ESP_OK) {
+        ESP_LOGI(TAG, "OTA app marked valid");
+        status_led_ota_success_start();
+    } else {
+        ESP_LOGW(TAG, "OTA app validation mark skipped: %s", esp_err_to_name(ota_mark_ret));
+    }
 
     LoadFromNVS(); // Loading last known brightness / color temperature
     tlc_set_logical_brightness_smooth((uint8_t)current_brightness, (uint16_t)mired);

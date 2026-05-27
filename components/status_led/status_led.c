@@ -33,6 +33,10 @@ static const char *TAG = "STATUS_LED";
 #define BOOT_OK_STEP_COUNT        (BOOT_OK_CYCLES * 4) // R->Y->G->Y = 4 steps
 #define BOOT_OK_STEP_MS           (BOOT_OK_TOTAL_MS / BOOT_OK_STEP_COUNT)
 
+#define OTA_SUCCESS_FLASH_ON_MS   (120)
+#define OTA_SUCCESS_FLASH_OFF_MS  (120)
+#define OTA_SUCCESS_FLASH_COUNT   (6)
+
 typedef struct {
     status_led_config_t cfg;
     SemaphoreHandle_t lock;
@@ -53,6 +57,10 @@ typedef struct {
     bool boot_anim_active;
     uint32_t boot_anim_step;
     TickType_t boot_anim_next_change;
+
+    bool ota_success_active;
+    uint32_t ota_success_step;
+    TickType_t ota_success_next_change;
 
     // LEDC
     bool ledc_ready;
@@ -92,6 +100,19 @@ void status_led_boot_ok_start(void)
     s.boot_anim_active = true;
     s.boot_anim_step = 0;
     s.boot_anim_next_change = xTaskGetTickCount(); // start immediately
+
+    xSemaphoreGive(s.lock);
+}
+
+void status_led_ota_success_start(void)
+{
+    if (!s.lock) return;
+
+    xSemaphoreTake(s.lock, portMAX_DELAY);
+
+    s.ota_success_active = true;
+    s.ota_success_step = 0;
+    s.ota_success_next_change = xTaskGetTickCount();
 
     xSemaphoreGive(s.lock);
 }
@@ -236,9 +257,40 @@ static bool render_boot_ok_anim(uint8_t *g, uint8_t *y, uint8_t *r)
     return true; // animation is active and rendered
 }
 
+static bool render_ota_success_anim(uint8_t *g, uint8_t *y, uint8_t *r)
+{
+    if (!s.ota_success_active) return false;
+
+    TickType_t now = xTaskGetTickCount();
+    const uint32_t total_steps = OTA_SUCCESS_FLASH_COUNT * 2;
+
+    if (now >= s.ota_success_next_change) {
+        bool on_phase = (s.ota_success_step % 2 == 0);
+        s.ota_success_next_change = now + pdMS_TO_TICKS(on_phase ? OTA_SUCCESS_FLASH_ON_MS : OTA_SUCCESS_FLASH_OFF_MS);
+        s.ota_success_step++;
+
+        if (s.ota_success_step > total_steps) {
+            s.ota_success_active = false;
+            *g = *y = *r = 0;
+            return true;
+        }
+    }
+
+    *g = *y = *r = 0;
+    if (s.ota_success_step > 0 && ((s.ota_success_step - 1) % 2 == 0)) {
+        *g = 255;
+        *y = 255;
+    }
+
+    return true;
+}
+
 
 static void render_u8(uint8_t *g, uint8_t *y, uint8_t *r)
 {
+    if (render_ota_success_anim(g, y, r)) {
+        return;
+    }
     if (render_boot_ok_anim(g, y, r)) {
         return;
     }

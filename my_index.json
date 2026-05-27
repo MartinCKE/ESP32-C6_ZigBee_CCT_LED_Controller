@@ -1,0 +1,12 @@
+[
+  {
+    "fileName": "zigbee_cct_led_controller-0x0001000A.ota",
+    "fileVersion": 65546,
+    "fileSize": 696510,
+    "url": "./ota/zigbee_cct_led_controller-0x0001000A.ota",
+    "imageType": 1,
+    "manufacturerCode": 4660,
+    "sha512": "ff373c20ad7452411668ca8bcb8a67f3148e3f83350e6b63bf4cbfef09ac7f9a07f29eb68daf4ad3dc80f2b21dddfebb19fec6f55355a1e81aa64b6fc2afe0d6",
+    "otaHeaderString": "CK-Home CCT SmartLamp OTA"
+  }
+]
