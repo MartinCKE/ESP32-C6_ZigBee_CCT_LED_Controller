@@ -9,7 +9,7 @@ OTA identity:
 - Current firmware version: see `OTA_UPGRADE_RUNNING_FILE_VERSION` in `components/zigbee_app/zigbee_app.h`
 - Hardware version: `0x0002`
 
-The `0x0001000A` test build flashes the status LED green+yellow rapidly after the first successful boot into an OTA image. It also exposes Basic cluster `SW_BUILD_ID` as `0x0001000A`, which can be refreshed by re-interviewing the device after the update. OTA block size is set to `100` bytes.
+The `0x0001000E` test build flashes the status LED green+yellow rapidly after the first successful boot into an OTA image. It also exposes Basic cluster `SW_BUILD_ID` as `0x0001000E`, which can be refreshed by re-interviewing the device after the update. OTA block size is set to `100` bytes. This build uses size optimization, trims unused build components, logs OTA receive progress every 16 KB instead of every block, and keeps wakeup/touch state synced to the currently rendered brightness and color temperature.
 
 Build and wrap an update image. Use a file version higher than the version currently running on the lamp:
 
@@ -17,8 +17,8 @@ Build and wrap an update image. Use a file version higher than the version curre
 idf.py build
 python3 scripts/make_zigbee_ota.py \
   build/zigbee_cct_led_controller.bin \
-  ota/zigbee_cct_led_controller-0x0001000A.ota \
-  0x0001000A
+  ota/zigbee_cct_led_controller-0x0001000E.ota \
+  0x0001000E
 ```
 
 Place the `.ota` file somewhere Zigbee2MQTT can read it, then add a local OTA override index in the Zigbee2MQTT data directory:
@@ -26,13 +26,13 @@ Place the `.ota` file somewhere Zigbee2MQTT can read it, then add a local OTA ov
 ```json
 [
   {
-    "fileName": "zigbee_cct_led_controller-0x0001000A.ota",
-    "fileVersion": 65546,
-    "fileSize": 696510,
-    "url": "./ota/zigbee_cct_led_controller-0x0001000A.ota",
+    "fileName": "zigbee_cct_led_controller-0x0001000E.ota",
+    "fileVersion": 65550,
+    "fileSize": 648942,
+    "url": "./ota/zigbee_cct_led_controller-0x0001000E.ota",
     "imageType": 1,
     "manufacturerCode": 4660,
-    "sha512": "ff373c20ad7452411668ca8bcb8a67f3148e3f83350e6b63bf4cbfef09ac7f9a07f29eb68daf4ad3dc80f2b21dddfebb19fec6f55355a1e81aa64b6fc2afe0d6",
+    "sha512": "baae27807098ab2c389a55f9b8ae63bf0720a18eac33b85e5ffbfd2357e17c92d619940d09132dbb87e019d84226edac9aa842060e5657402e20bb44472b46a3",
     "otaHeaderString": "CK-Home CCT SmartLamp OTA"
   }
 ]
@@ -43,7 +43,7 @@ Example Zigbee2MQTT config:
 ```yaml
 ota:
   zigbee_ota_override_index_location: my_index.json
-  image_block_response_delay: 50
+  image_block_response_delay: 10
   default_maximum_data_size: 100
 ```
 

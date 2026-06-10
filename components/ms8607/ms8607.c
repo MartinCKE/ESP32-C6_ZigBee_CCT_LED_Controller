@@ -33,7 +33,7 @@ static esp_err_t pt_read_prom(void)
         uint8_t cmd = PT_CMD_PROM_BASE + (i * 2); // 0xA0 .. 0xAC
         uint8_t rx[2];
 
-        ESP_LOGI(TAG, "%d : Reading PROM cmd 0x%02X", i, cmd);
+        ESP_LOGD(TAG, "%d : Reading PROM cmd 0x%02X", i, cmd);
 
         esp_err_t ret = i2c_master_transmit(pt_dev, &cmd, 1, -1);
         if (ret != ESP_OK) return ret;
@@ -112,18 +112,18 @@ esp_err_t ms8607_init(i2c_master_bus_handle_t bus)
 
     esp_err_t ret = i2c_master_bus_add_device(bus, &cfg, &pt_dev);
     
-    ESP_LOGI(TAG, "add PT ret=%s handle=%p", esp_err_to_name(ret), (void*)pt_dev);
+    ESP_LOGD(TAG, "add PT ret=%s handle=%p", esp_err_to_name(ret), (void*)pt_dev);
     if (ret != ESP_OK) return ret;
 
     cfg.device_address = MS8607_ADDR_RH;
     ret = i2c_master_bus_add_device(bus, &cfg, &rh_dev);
-    ESP_LOGI(TAG, "add RH ret=%s handle=%p", esp_err_to_name(ret), (void*)rh_dev);
+    ESP_LOGD(TAG, "add RH ret=%s handle=%p", esp_err_to_name(ret), (void*)rh_dev);
     if (ret != ESP_OK) return ret;
 
     // now PT reset
     uint8_t cmd = PT_CMD_RESET;
     ret = i2c_master_transmit(pt_dev, &cmd, 1, -1);
-    ESP_LOGI(TAG, "PT reset ret=%s", esp_err_to_name(ret));
+    ESP_LOGD(TAG, "PT reset ret=%s", esp_err_to_name(ret));
     if (ret != ESP_OK) return ret;
 
     vTaskDelay(pdMS_TO_TICKS(3));

@@ -3,7 +3,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
-#include "freertos/semphr.h"
 
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -17,13 +16,9 @@ static const char *TAG = "TOUCH_SENSOR";
 #define LOOP_TICK_MS               (10)  
 #define QUEUE_LEN                  (16)
 
-uint8_t  last_brightness;
-uint16_t last_ct_mired;
-
 typedef struct {
     touch_sensor_config_t cfg;
 
-    SemaphoreHandle_t lock;
     QueueHandle_t q;
     TaskHandle_t task;
 
@@ -49,7 +44,6 @@ typedef struct {
     touch_hold_mode_t mode;
 
     // local cached values (used if getters not provided)
-    bool     cached_power;
     uint8_t  cached_brightness;
     uint16_t cached_ct_mired;
 
@@ -59,7 +53,6 @@ typedef struct {
 static ctx_t s;
 
 static inline TickType_t now_tick(void) { return xTaskGetTickCount(); }
-static inline uint32_t ticks_to_ms(TickType_t t) { return (uint32_t)(t * portTICK_PERIOD_MS); }
 static inline TickType_t ms_to_ticks(uint32_t ms) { return pdMS_TO_TICKS(ms); }
 
 static inline bool level_to_touched(int level)
@@ -126,7 +119,7 @@ static void set_mode(touch_hold_mode_t mode)
 {
     if (s.mode == mode) return;
     s.mode = mode;
-    ESP_LOGI(TAG, "Hold mode: %s", (mode == TOUCH_HOLD_MODE_BRIGHTNESS) ? "BRIGHTNESS" : "CT");
+    ESP_LOGD(TAG, "Hold mode: %s", (mode == TOUCH_HOLD_MODE_BRIGHTNESS) ? "BRIGHTNESS" : "CT");
     if (s.cfg.actions.mode_changed) {
         s.cfg.actions.mode_changed(mode, s.cfg.user_ctx);
     }
@@ -143,48 +136,22 @@ static void IRAM_ATTR gpio_isr(void *arg)
     if (hp) portYIELD_FROM_ISR();
 }
 
-// ---------- Gesture actions ----------
-static void on_press_old(void)
-{
-    s.pressed = true;
-    s.press_tick = now_tick();
-    s.hold_active = false;
-    if (s.cfg.actions.user_interaction) {
-        s.cfg.actions.user_interaction(s.cfg.user_ctx);
-    }
-    ESP_LOGI(TAG, "Touch PRESS");
-}
-
 static void on_press(void)
 {
     s.pressed = true;
     s.press_tick = now_tick();
     s.hold_active = false;
 
-    // default
     s.suppress_tap_once = false;
 
-    // call optional user hook
     if (s.cfg.actions.user_interaction) {
-        s.cfg.actions.user_interaction(s.cfg.user_ctx);
-
-        // ✅ if user hook requested consuming this press, suppress tap
-        if (s.cfg.user_ctx) {
-            // match the struct in main.c
-            typedef struct {
-                volatile bool consume_next_tap;
-            } touch_user_ctx_t;
-
-            touch_user_ctx_t *t = (touch_user_ctx_t *)s.cfg.user_ctx;
-            if (t->consume_next_tap) {
-                t->consume_next_tap = false;   // clear it
-                s.suppress_tap_once = true;
-                s.tap_count = 0;               // cancel any pending single/double tap logic
-            }
+        if (s.cfg.actions.user_interaction(s.cfg.user_ctx)) {
+            s.suppress_tap_once = true;
+            s.tap_count = 0;
         }
     }
 
-    ESP_LOGI(TAG, "Touch PRESS");
+    ESP_LOGD(TAG, "Touch PRESS");
 }
 static void start_hold_if_needed(void)
 {
@@ -195,7 +162,9 @@ static void start_hold_if_needed(void)
         s.hold_active = true;
         s.last_hold_step_tick = now_tick();
         s.hold_dir = s.next_hold_dir;
-        ESP_LOGI(TAG, "Hold START (mode=%s, dir=%s)",
+        s.cached_brightness = get_brightness();
+        s.cached_ct_mired = get_ct();
+        ESP_LOGD(TAG, "Hold START (mode=%s, dir=%s)",
                  (s.mode == TOUCH_HOLD_MODE_BRIGHTNESS) ? "BRIGHTNESS" : "CT",
                  (s.hold_dir > 0) ? "UP" : "DOWN");
     }
@@ -211,7 +180,7 @@ static void hold_step(void)
         if ((now - s.last_hold_step_tick) < ms_to_ticks(s.cfg.brightness_step_ms)) return;
         s.last_hold_step_tick = now;
 
-        int v = (int)get_brightness() + (int)s.hold_dir * (int)s.cfg.brightness_step;
+        int v = (int)s.cached_brightness + (int)s.hold_dir * (int)s.cfg.brightness_step;
         uint8_t clamped = clamp_u8(v, s.cfg.brightness_min, s.cfg.brightness_max);
 
         // bounce at ends
@@ -226,7 +195,7 @@ static void hold_step(void)
     if ((now - s.last_hold_step_tick) < ms_to_ticks(s.cfg.ct_step_ms)) return;
     s.last_hold_step_tick = now;
 
-    int v = (int)get_ct() + (int)s.hold_dir * (int)s.cfg.ct_step;
+    int v = (int)s.cached_ct_mired + (int)s.hold_dir * (int)s.cfg.ct_step;
     uint16_t clamped = clamp_u16(v, s.cfg.ct_min_mired, s.cfg.ct_max_mired);
 
     // bounce at ends
@@ -261,7 +230,7 @@ static void on_release(void)
     if (s.suppress_tap_once) {
         s.suppress_tap_once = false;
         s.tap_count = 0;
-        ESP_LOGI(TAG, "Tap suppressed");
+        ESP_LOGD(TAG, "Tap suppressed");
         return;
     }
 
@@ -282,7 +251,7 @@ static void on_release(void)
             s.tap_count = 0;
             // double tap action: toggle hold mode
             set_mode((s.mode == TOUCH_HOLD_MODE_BRIGHTNESS) ? TOUCH_HOLD_MODE_CT : TOUCH_HOLD_MODE_BRIGHTNESS);
-            ESP_LOGI(TAG, "Double TAP");
+            ESP_LOGD(TAG, "Double TAP");
             return;
         } else {
             // too late: treat previous as single tap, start new window for this one
@@ -304,7 +273,7 @@ static void process_single_tap_timeout(void)
     if (dt >= ms_to_ticks(s.cfg.double_tap_window_ms)) {
         // no 2nd tap came -> single tap action
         s.tap_count = 0;
-        ESP_LOGI(TAG, "Single TAP");
+        ESP_LOGD(TAG, "Single TAP");
         apply_toggle_power();
     }
 }
@@ -325,11 +294,10 @@ static void touch_task(void *arg)
     s.next_hold_dir = +1;
 
     // cached defaults if no getters
-    s.cached_power = false;
     s.cached_brightness = 128;
     s.cached_ct_mired = (s.cfg.ct_min_mired + s.cfg.ct_max_mired) / 2;
 
-    ESP_LOGI(TAG, "Touch task started. GPIO%d active_%s",
+    ESP_LOGD(TAG, "Touch task started. GPIO%d active_%s",
              s.cfg.gpio_num, s.cfg.active_low ? "LOW" : "HIGH");
 
     while (1) {
@@ -401,9 +369,6 @@ esp_err_t touch_sensor_start(const touch_sensor_config_t *cfg)
     if (s.cfg.ct_step_ms == 0) s.cfg.ct_step_ms = 20;
 
 
-    s.lock = xSemaphoreCreateMutex();
-    if (!s.lock) return ESP_ERR_NO_MEM;
-
     s.q = xQueueCreate(QUEUE_LEN, sizeof(int));
     if (!s.q) return ESP_ERR_NO_MEM;
 
@@ -439,7 +404,7 @@ esp_err_t touch_sensor_start(const touch_sensor_config_t *cfg)
     if (ok != pdPASS) return ESP_ERR_NO_MEM;
 
     s.started = true;
-    ESP_LOGI(TAG, "Touch sensor started. Hold mode initial=%s",
+    ESP_LOGD(TAG, "Touch sensor started. Hold mode initial=%s",
              (s.mode == TOUCH_HOLD_MODE_BRIGHTNESS) ? "BRIGHTNESS" : "CT");
     return ESP_OK;
 }
@@ -459,11 +424,6 @@ esp_err_t touch_sensor_stop(void)
         vQueueDelete(s.q);
         s.q = NULL;
     }
-    if (s.lock) {
-        vSemaphoreDelete(s.lock);
-        s.lock = NULL;
-    }
-
     s.started = false;
     return ESP_OK;
 }

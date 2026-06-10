@@ -32,9 +32,6 @@ static bool power_gpio_initialized = false;
 #define TLC_RESET_GPIO  GPIO_NUM_15
 static bool reset_gpio_initialized = false;
 
-// NOTE: You also have current_brightness in zigbee_app.c; keep one “logical” source of truth there.
-uint16_t brightness = 128;
-
 #define TLC_ADDR 0x41
 #define REG_MODE1   0x00
 #define REG_MODE2   0x01
@@ -94,13 +91,17 @@ static ct_fade_t s_ct = {
 };
 
 
-// CT mixing ratios
-static float ct_white_ratio = 0.5f;
-static float ct_amber_ratio = 0.5f;
-
 bool light_is_on(void)
 {
     return light_on;
+}
+
+void light_set_on_state(bool on)
+{
+    light_on = on;
+    if (on && current_brightness > 0) {
+        light_remember_brightness((uint8_t)current_brightness);
+    }
 }
 
 void light_remember_brightness(uint8_t bri)
@@ -111,7 +112,7 @@ void light_remember_brightness(uint8_t bri)
 void light_set_on(bool on, bool report_zigbee)
 {
     light_on = on;
-    ESP_LOGI(TAG, "light_set_on: on=%d report_zigbee=%d", (int)on, (int)report_zigbee);
+    ESP_LOGD(TAG, "light_set_on: on=%d report_zigbee=%d", (int)on, (int)report_zigbee);
 
     if (!on) {
         // Fade down to 0 without changing current_brightness
@@ -271,26 +272,6 @@ uint8_t tlc_get_white_brightness(void)
 
 // ---------- CT + apply ----------
 
-void led_color_temperature_control_old(uint16_t brightness_in, uint16_t mired_in)
-{
-    // Protect against divide-by-zero / nonsense input
-    if (mired_in < 1) mired_in = 1;
-
-    float kelvin = 1000000.0f / (float)mired_in;
-
-    if (kelvin < 2200.0f) kelvin = 2200.0f;
-    if (kelvin > 5000.0f) kelvin = 5000.0f;
-
-    ct_white_ratio = (kelvin - 2200.0f) / (5000.0f - 2200.0f);
-    if (ct_white_ratio < 0) ct_white_ratio = 0;
-    if (ct_white_ratio > 1) ct_white_ratio = 1;
-
-    ct_amber_ratio = 1.0f - ct_white_ratio;
-
-    led_apply_brightness_and_ct(brightness_in, mired_in);
-    ESP_LOGI(TAG, "led_color_temperature_control: bri=%u mired=%u", (unsigned)brightness_in, (unsigned)mired_in);
-}
-
 static void ct_compute_ratios(uint16_t mired, float *white_ratio, float *amber_ratio)
 {
     // Clamp mired to valid range
@@ -336,22 +317,12 @@ void led_apply_brightness_and_ct(uint16_t brightness, uint16_t mired)
     s_out_amber = amber_pwm;
     s_out_white = white_pwm;
 
-    ESP_LOGI(TAG,
+    ESP_LOGD(TAG,
              "Apply: bri=%u mired=%u mix=%d -> amber=%u white=%u sum=%u",
              (unsigned)brightness, (unsigned)mired, mix,
              (unsigned)amber_pwm, (unsigned)white_pwm,
              (unsigned)(amber_pwm + white_pwm));
 }
-
-
-
-// Optional: keep this wrapper for your old call sites:
-void led_color_temperature_control(uint16_t brightness, uint16_t mired)
-{
-    led_apply_brightness_and_ct(brightness, mired);
-}
-
-
 // ---------- fade engine ----------
 static void fade_task(void *arg)
 {
@@ -435,7 +406,7 @@ void tlc_set_logical_brightness_smooth_ms(uint8_t target, uint16_t mired_now, ui
     s_fade.transition_ms = (transition_ms < 1) ? 1 : transition_ms;
     s_fade.elapsed_ms = 0;
     s_fade.running = true;
-    ESP_LOGI(TAG, "tlc_set_logical_brightness_smooth_ms: cur=%u target=%u mired=%u ms=%u",
+    ESP_LOGD(TAG, "tlc_set_logical_brightness_smooth_ms: cur=%u target=%u mired=%u ms=%u",
              (unsigned)s_fade.cur, (unsigned)s_fade.target, (unsigned)s_fade.mired,
              (unsigned)s_fade.transition_ms);
 }
@@ -453,12 +424,38 @@ void tlc_set_ct_mired_smooth(uint16_t target_mired, uint32_t transition_ms)
             s_ct.cur = (uint16_t)mired;   // fallback once, if needed
         }
     }
-    ESP_LOGI(TAG, "tlc_set_ct_mired_smooth: cur=%u target=%u ms=%u",
+    ESP_LOGD(TAG, "tlc_set_ct_mired_smooth: cur=%u target=%u ms=%u",
              (unsigned)s_ct.cur, (unsigned)target_mired, (unsigned)transition_ms);
 
     s_ct.target = target_mired;
     s_ct.transition_ms = transition_ms;
     s_ct.running = true;
+}
+
+uint16_t tlc_get_current_ct_mired(void)
+{
+    if (s_ct.cur < 200) return 200;
+    if (s_ct.cur > 455) return 455;
+    return s_ct.cur;
+}
+
+void tlc_set_output_immediate(uint8_t level, uint16_t mired_value)
+{
+    if (mired_value < 200) mired_value = 200;
+    if (mired_value > 455) mired_value = 455;
+
+    s_fade.cur = level;
+    s_fade.start = level;
+    s_fade.target = level;
+    s_fade.mired = mired_value;
+    s_fade.elapsed_ms = 0;
+    s_fade.running = false;
+
+    s_ct.cur = mired_value;
+    s_ct.target = mired_value;
+    s_ct.running = false;
+
+    led_apply_brightness_and_ct(level, mired_value);
 }
 
 void tlc_set_ct_mired(uint16_t new_mired)
@@ -515,7 +512,7 @@ esp_err_t tlc59108_init(i2c_master_bus_handle_t bus)
 
 esp_err_t tlc_set_all_brightness(uint8_t value)
 {
-    ESP_LOGI(TAG, "Setting all brightness to %d", value);
+    ESP_LOGD(TAG, "Setting all brightness to %d", value);
     return tlc59108_set_group_pwm(all_channels, ALL_CH_COUNT, value);
 }
 
@@ -558,20 +555,6 @@ void tlc_breathe_init(float speed_hz)
 void tlc_set_breathing_enabled(bool enabled)
 {
     breathing_enabled = enabled;
-}
-
-void tlc_dump_registers(void)
-{
-    uint8_t val;
-    printf("----- TLC59108 Register Dump -----\n");
-    for (int reg = 0x00; reg <= 0x0D; reg++) {
-        if (tlc_read_reg(reg, &val) == ESP_OK) {
-            printf("Reg 0x%02X = 0x%02X\n", reg, val);
-        } else {
-            printf("Reg 0x%02X = <ERROR>\n", reg);
-        }
-    }
-    printf("----------------------------------\n");
 }
 
 // ---------- animations / sequences ----------
@@ -650,7 +633,7 @@ void zigbee_connection_confirmed_sequence(uint16_t brightness)
 {
     const TickType_t on_time  = pdMS_TO_TICKS(120);
     const TickType_t off_time = pdMS_TO_TICKS(200);
-    ESP_LOGI(TAG, "Zigbee connection confirmed LED sequence");
+    ESP_LOGD(TAG, "Zigbee connection confirmed LED sequence");
 
     tlc_set_breathing_enabled(false);
 
@@ -670,11 +653,4 @@ void zigbee_connection_confirmed_sequence(uint16_t brightness)
 void light_toggle_handler(void)
 {
     light_set_on(!light_is_on(), true);
-}
-
-
-// Optional: keep this around if other code needs state
-bool tlc_light_is_on(void)
-{
-    return light_on;
 }

@@ -1,5 +1,5 @@
 idf_component_register(
     SRCS "button.c"
     INCLUDE_DIRS "."
-    REQUIRES driver esp_timer freertos zigbee_app tlc59108
+    REQUIRES esp_driver_gpio esp_timer freertos zigbee_app tlc59108
 )

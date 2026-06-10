@@ -1,11 +1,10 @@
 #pragma once
+#include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
 #include "driver/i2c_master.h"
 
-void led_color_temperature_control(uint16_t brightness, uint16_t mired);
 void led_apply_brightness_and_ct(uint16_t brightness, uint16_t mired);
-//extern uint8_t brightness;
 
 esp_err_t tlc59108_init(i2c_master_bus_handle_t bus);
 esp_err_t tlc59108_set_pwm(uint8_t channel, uint8_t value);
@@ -18,15 +17,12 @@ esp_err_t tlc_set_amber_brightness(uint8_t value);
 
 esp_err_t tlc_set_all_brightness_percentage(uint8_t percentage);
 
-void tlc_test_channels(void);
-
 void tlc_power_init(void);
 void tlc_power_set(bool on);
 
 void tlc_reset_init(void);
 void tlc_reset_pulse(void);
 
-void tlc_dump_registers(void);
 void tlc_reset_init(void);
 
 void tlc_boot_led_sequence(void);
@@ -51,9 +47,11 @@ void tlc_set_logical_brightness_smooth(uint8_t target, uint16_t mired_now);
 void tlc_set_logical_brightness_smooth_ms(uint8_t target, uint16_t mired_now, uint32_t transition_ms);
 void tlc_set_ct_mired(uint16_t new_mired);
 void tlc_set_ct_mired_smooth(uint16_t target_mired, uint32_t transition_ms);
+uint16_t tlc_get_current_ct_mired(void);
+void tlc_set_output_immediate(uint8_t level, uint16_t mired_value);
 
 void light_remember_brightness(uint8_t bri);
 void light_set_on(bool on, bool report_zigbee);
+void light_set_on_state(bool on);
 bool light_is_on(void);
-uint8_t get_current_logical_brightness_from_outputs();
-
+uint8_t get_current_logical_brightness_from_outputs(void);

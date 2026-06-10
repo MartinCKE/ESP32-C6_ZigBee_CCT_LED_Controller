@@ -119,7 +119,7 @@ esp_err_t button_init(const button_config_t *cfg, TaskHandle_t notify_task)
     s_btn.waiting_second = false;
     s_btn.first_release_us = 0;
 
-    ESP_LOGI(TAG, "Button initialized on GPIO%d (active_%s)",
+    ESP_LOGD(TAG, "Button initialized on GPIO%d (active_%s)",
              cfg->gpio_num, cfg->active_low ? "low" : "high");
 
     return ESP_OK;
@@ -257,5 +257,4 @@ bool button_wait_event(button_event_t *out_event, TickType_t timeout_ticks)
         }
     }
 }
-
 

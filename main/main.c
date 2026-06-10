@@ -1,12 +1,9 @@
 #include "driver/i2c_master.h"
 #include "tlc59108.h"
-#include "tc74.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "zigbee_app.h"
 #include "esp_zigbee_core.h"
-#include "esp_check.h"
-#include "ha/esp_zigbee_ha_standard.h"
 #include "nvs_flash.h"
 #include "ms8607.h"
 #include "button.h"
@@ -20,26 +17,23 @@
 
 static const char *TAG = "MAIN";
 
-static uint8_t get_bri(void *ctx) { (void)ctx; return (uint8_t)current_brightness; }
-static uint16_t get_ct(void *ctx) { (void)ctx; return (uint16_t)mired; }
+#define TOUCH_CT_TRANSITION_MS 40
+#define TOUCH_BRI_TRANSITION_MS 20
 
-typedef struct {
-    volatile bool consume_next_tap;
-} touch_user_ctx_t;
-
-static touch_user_ctx_t s_touch_ctx = {0};
+static uint8_t get_bri(void *ctx) { (void)ctx; return get_current_logical_brightness_from_outputs(); }
+static uint16_t get_ct(void *ctx) { (void)ctx; return tlc_get_current_ct_mired(); }
 
 void scan_i2c(i2c_master_bus_handle_t bus)
 {
-    ESP_LOGI(TAG, "Starting I2C scan...");
+    ESP_LOGD(TAG, "Starting I2C scan...");
 
     for (int addr = 1; addr < 127; addr++) {
         esp_err_t ret = i2c_master_probe(bus, addr, 50);  // timeout = 50us
         if (ret == ESP_OK) {
-            ESP_LOGI(TAG, "✔ Found device at address: 0x%02X", addr);
+            ESP_LOGD(TAG, "Found I2C device at 0x%02X", addr);
         }
     }
-    ESP_LOGI(TAG, "I2C scan finished.");
+    ESP_LOGD(TAG, "I2C scan finished.");
 }
 
 void led_task(void *arg)
@@ -67,18 +61,13 @@ void temperature_task(void *arg) {
     while (1) {
         esp_err_t ret_ms   = ms8607_read_temperature_humidity(&t_ms, &rh);
         if (ret_ms == ESP_OK) {
-            ESP_LOGI(TAG, "MS8607: %.2f °C, %.1f %%RH", t_ms, rh);
+            ESP_LOGD(TAG, "MS8607: %.2f C, %.1f %%RH", t_ms, rh);
             if (zigbee_is_connected()) {
                 zigbee_update_temp_rh(t_ms, rh);
             }
 
         } else {
-            ESP_LOGI(TAG, "MS8607: %s (%.2f °C, %.1f %%RH)",
-                     esp_err_to_name(ret_ms),   t_ms, rh);
-
-            if (ret_ms != ESP_OK) {
-                ESP_LOGE(TAG, "MS8607 read failed: %s", esp_err_to_name(ret_ms));
-            }
+            ESP_LOGW(TAG, "MS8607 read failed: %s", esp_err_to_name(ret_ms));
         }
         vTaskDelay(temp_delay);
     }
@@ -104,16 +93,16 @@ static void button_task(void *arg)
         if (button_wait_event(&ev, portMAX_DELAY)) {
             switch (ev) {
                 case BUTTON_EVENT_SINGLE_PRESS:
-                    ESP_LOGI(TAG, "Single press");
+                    ESP_LOGD(TAG, "Single press");
                     status_led_notify_button_press();
                     light_toggle_handler();
                     break;
                 case BUTTON_EVENT_DOUBLE_PRESS:
                     events_post(APP_EVENT_ZIGBEE_FACTORY_RESET);
-                    ESP_LOGI(TAG, "Double press");
+                    ESP_LOGD(TAG, "Double press");
                     break;
                 case BUTTON_EVENT_LONG_PRESS:
-                    ESP_LOGI(TAG, "Long press");
+                    ESP_LOGD(TAG, "Long press");
                     break;
                 default:
                     break;
@@ -122,26 +111,17 @@ static void button_task(void *arg)
     }
 }
 
-static void touch_user_interaction_cb(void *user_ctx)
+static bool touch_user_interaction_cb(void *user_ctx)
 {
-    touch_user_ctx_t *t = (touch_user_ctx_t *)user_ctx;
+    (void)user_ctx;
 
     if (wakeup_is_running()) {
-        ESP_LOGW("MAIN", "Touch press: stopping wakeup (freeze)");
-
-        wakeup_stop_cycle_freeze();
-
-        wakeup_cfg_t cfg = wakeup_get();
-        cfg.enabled = false;
-        wakeup_set(&cfg);
-        wakeup_save_to_nvs();
-
-        zigbee_set_level_and_report((uint8_t)current_brightness);
-        zigbee_set_ct_and_report((uint16_t)mired);
+        ESP_LOGD(TAG, "Touch press: stopping wakeup (freeze)");
         zigbee_wakeup_cancel_and_report();
-        // Tell touch driver to NOT treat this press/release as a tap
-        t->consume_next_tap = true;
+        return true;
     }
+
+    return false;
 }
 
 
@@ -156,9 +136,9 @@ static void act_apply_brightness(uint8_t level, void *ctx)
     (void)ctx;
     if (level == 0) level = 1; // avoid zero brightness 
     current_brightness = level;
-    ESP_LOGI("MAIN", "Brightness apply: level=%u", (unsigned)level);
-    ESP_LOGI("MAIN", "Current mired: %u", (unsigned)mired);
-    led_apply_brightness_and_ct(current_brightness, mired);
+    light_set_on_state(true);
+    ESP_LOGD(TAG, "Brightness apply: level=%u mired=%u", (unsigned)level, (unsigned)mired);
+    tlc_set_logical_brightness_smooth_ms((uint8_t)current_brightness, (uint16_t)mired, TOUCH_BRI_TRANSITION_MS);
 }
 
 static void act_commit_brightness(uint8_t level, void *ctx)
@@ -167,8 +147,6 @@ static void act_commit_brightness(uint8_t level, void *ctx)
     current_brightness = level;
     SaveToNVS();
     zigbee_set_level_and_report(level);
-
-    //debug stuff
     zigbee_set_ct_and_report(mired);
 }
 
@@ -176,34 +154,24 @@ static void act_apply_ct(uint16_t mired_new, void *ctx)
 {
     (void)ctx;
     mired = mired_new;
-    ESP_LOGI("MAIN", "CT apply: mired_new=%u", (unsigned)mired_new);
-    ESP_LOGI("MAIN", "Current brightness: %u", (unsigned)current_brightness);
-    tlc_set_ct_mired((uint16_t)mired); 
+    ESP_LOGD(TAG, "CT apply: mired=%u brightness=%u", (unsigned)mired_new, (unsigned)current_brightness);
+    tlc_set_ct_mired_smooth((uint16_t)mired, TOUCH_CT_TRANSITION_MS);
 }
 
 static void act_commit_ct(uint16_t mired_new, void *ctx)
 {
     (void)ctx;
     mired = mired_new;
-    ESP_LOGI("MAIN", "CT commit: mired_new=%u", (unsigned)mired_new);
-    tlc_set_ct_mired((uint16_t)mired); 
+    ESP_LOGD(TAG, "CT commit: mired=%u", (unsigned)mired_new);
     SaveToNVS();
     zigbee_set_ct_and_report(mired_new);
-
-    // debug stuff
     zigbee_set_level_and_report(current_brightness);
-    
 }
 
 
 void app_main(void)
 {
     esp_log_level_set("*", ESP_LOG_INFO);
-    esp_log_level_set("ZCL", ESP_LOG_DEBUG);
-    esp_log_level_set("ZB_ZCL", ESP_LOG_DEBUG);
-    esp_log_level_set("ESP_ZB_ZCL", ESP_LOG_DEBUG);
-    esp_log_level_set("ZIGBEE", ESP_LOG_DEBUG);
-    esp_log_level_set("ESP_ZB", ESP_LOG_DEBUG);
 
     status_led_config_t led_cfg = {
         .gpio_red = 19,
@@ -236,7 +204,7 @@ void app_main(void)
             .get_ct_mired      = get_ct,
             .user_interaction  = touch_user_interaction_cb,
         },
-        .user_ctx = &s_touch_ctx,
+        .user_ctx = NULL,
     };
     ESP_ERROR_CHECK(touch_sensor_start(&cfg));
 
@@ -255,9 +223,6 @@ void app_main(void)
     ESP_ERROR_CHECK(i2c_new_master_bus(&bus_cfg, &bus));
 
     scan_i2c(bus);
-    //tc74_init(bus);
-    // Initialize PTH sensor
-    
     ESP_ERROR_CHECK(ms8607_init(bus));
     vTaskDelay(pdMS_TO_TICKS(300)); // initial delay to allow Zigbee to connect first
     // Initiate LED driver
@@ -276,25 +241,25 @@ void app_main(void)
         .radio_config = ESP_ZB_DEFAULT_RADIO_CONFIG(),
         .host_config = ESP_ZB_DEFAULT_HOST_CONFIG(),
     };
-    ESP_LOGI("MAIN", "Starting NVS flash init");
+    ESP_LOGD(TAG, "Starting NVS flash init");
     ESP_ERROR_CHECK(nvs_flash_init());
     esp_err_t ota_mark_ret = esp_ota_mark_app_valid_cancel_rollback();
     if (ota_mark_ret == ESP_OK) {
         ESP_LOGI(TAG, "OTA app marked valid");
         status_led_ota_success_start();
     } else {
-        ESP_LOGW(TAG, "OTA app validation mark skipped: %s", esp_err_to_name(ota_mark_ret));
+        ESP_LOGD(TAG, "OTA app validation mark skipped: %s", esp_err_to_name(ota_mark_ret));
     }
 
     LoadFromNVS(); // Loading last known brightness / color temperature
     tlc_set_logical_brightness_smooth((uint8_t)current_brightness, (uint16_t)mired);
     light_set_on(true, true);
 
-    ESP_LOGI("MAIN", "Starting ESP Zigbee Config");
+    ESP_LOGD(TAG, "Starting ESP Zigbee Config");
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
 
     /* Start Zigbee stack task */
-    ESP_LOGI("MAIN", "Starting ESP Zigbee Task");
+    ESP_LOGD(TAG, "Starting ESP Zigbee Task");
     xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
     
     /* Start LED task */

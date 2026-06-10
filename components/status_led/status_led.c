@@ -320,7 +320,7 @@ static void render_u8(uint8_t *g, uint8_t *y, uint8_t *r)
         if (s.state == STATUS_LED_STATE_JOINED_SUCCESSFULLY) {
             // Flash yellow 3 times then done
             uint32_t total_transitions = JOINED_FLASH_COUNT * 2; // ON,OFF per flash
-            ESP_LOGI(TAG, "Joined sequence step %d/%d", (int)s.seq_step, (int)total_transitions);
+            ESP_LOGD(TAG, "Joined sequence step %d/%d", (int)s.seq_step, (int)total_transitions);
 
             if (now >= s.seq_next_change) {
                 if (s.seq_step < total_transitions) {
@@ -398,7 +398,7 @@ void status_led_start(const status_led_config_t *cfg)
         return;
     }
     if (s.task) {
-        ESP_LOGW(TAG, "Already started");
+        ESP_LOGD(TAG, "Already started");
         return;
     }
 
@@ -445,7 +445,7 @@ void status_led_set_state(status_led_state_t state)
             seq_reset();
         }
 
-        ESP_LOGI(TAG, "Set status LED state: %d", (int)state);
+        ESP_LOGD(TAG, "Set status LED state: %d", (int)state);
     }
 
     xSemaphoreGive(s.lock);

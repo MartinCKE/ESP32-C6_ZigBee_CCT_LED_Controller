@@ -11,28 +11,15 @@
 #define HA_COLOR_DIMMABLE_LIGHT_ENDPOINT  10                                    /* esp light switch device endpoint */
 #define ESP_ZB_PRIMARY_CHANNEL_MASK     ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK    /* Zigbee primary channel mask use in the example */
 
-#define TEMP_SENSOR_UPDATE_INTERVAL (1)     /* Local sensor update interval (second) */
-#define TEMP_SENSOR_MIN_VALUE       (-10)   /* Local sensor min measured value (degree Celsius) */
-#define TEMP_SENSOR_MAX_VALUE       (80)    /* Local sensor max measured value (degree Celsius) */
-
 /* Zigbee OTA upgrade identity. Keep these in sync with the packaged OTA file. */
 #define OTA_UPGRADE_MANUFACTURER            0x1234
 #define OTA_UPGRADE_IMAGE_TYPE              0x0001
-#define OTA_UPGRADE_RUNNING_FILE_VERSION    0x0001000A
+#define OTA_UPGRADE_RUNNING_FILE_VERSION    0x0001000E
 #define OTA_UPGRADE_DOWNLOADED_FILE_VERSION 0xffffffff
 #define OTA_UPGRADE_HW_VERSION              0x0002
 #define OTA_UPGRADE_MAX_DATA_SIZE           100
 #define OTA_ELEMENT_HEADER_LEN              6
 
-// Zigbee attribute IDs
-#define ATTRID_LEVEL_AMBER  0xF001
-#define ATTRID_LEVEL_WHITE  0xF002
-
-/* Attribute values in ZCL string format
- * The string should be started with the length of its own.
- */
-#define MANUFACTURER_NAME               "\x09""ESPRESSIF"
-#define MODEL_IDENTIFIER                "\x07"CONFIG_IDF_TARGET
 void esp_zb_task(void *pvParameters);
 
 #define ESP_ZB_ZED_CONFIG()                                         \
